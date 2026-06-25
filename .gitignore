@@ -29,6 +29,9 @@ ENV/
 # Internal dev docs
 tasks/
 
+# Local/private ledgers
+sample.bean
+
 # IDE
 .idea/
 .vscode/

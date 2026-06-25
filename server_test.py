@@ -4,10 +4,11 @@ import os
 import textwrap
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from ledger import LedgerManager
+from beanie_mcp.ledger import LedgerManager
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -19,7 +20,7 @@ def _write_bean(path: Path, content: str) -> None:
 
 
 def _reset_manager():
-    import server
+    from beanie_mcp import server
 
     server._manager_cache = None
 
@@ -86,8 +87,53 @@ def test_check_returns_errors(tmp_path):
     _write_bean(bean, content)
     errors = LedgerManager(bean).check()
     assert len(errors) > 0
-    assert all(": " in e for e in errors)
-    assert any("999" in e or "balance" in e.lower() for e in errors)
+    assert all({"file", "line", "type", "message"} <= set(e) for e in errors)
+    assert any(
+        "999" in str(e["message"]) or "balance" in str(e["message"]).lower()
+        for e in errors
+    )
+
+
+def test_connection_reloads_on_include_mtime_change(tmp_path):
+    root = tmp_path / "main.bean"
+    included = tmp_path / "accounts.bean"
+    _write_bean(root, 'include "accounts.bean"\n')
+    _write_bean(included, "2022-01-01 open Assets:Cash USD\n")
+
+    mgr = LedgerManager(root)
+    first = mgr.connection()
+    _write_bean(
+        included,
+        """
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Expenses:Food USD
+        """,
+    )
+
+    assert mgr.connection() is not first
+
+
+def test_watcher_handles_atomic_save_events(tmp_path):
+    bean = tmp_path / "test.bean"
+    _write_bean(bean, "2022-01-01 open Assets:Cash USD\n")
+    mgr = LedgerManager(bean)
+    first = mgr.connection()
+    mgr.start_watcher()
+
+    try:
+        handler = mgr._handler
+        assert handler is not None
+        handler.on_any_event(
+            SimpleNamespace(
+                is_directory=False,
+                src_path=str(tmp_path / "test.bean.tmp"),
+                dest_path=str(bean),
+            )
+        )
+        time.sleep(2.2)
+        assert mgr.connection() is not first
+    finally:
+        mgr.stop_watcher()
 
 
 # ---------------------------------------------------------------------------
@@ -128,15 +174,22 @@ def no_ledger(monkeypatch):
 
 
 def test_run_query_returns_dict(with_ledger):
-    from server import run_query
+    from beanie_mcp.server import run_query
 
     result = run_query("SELECT DISTINCT account ORDER BY account")
     assert isinstance(result, dict)
-    assert set(result.keys()) == {"columns", "rows", "truncated", "total_rows"}
+    assert set(result.keys()) == {
+        "columns",
+        "rows",
+        "truncated",
+        "returned_rows",
+        "total_rows",
+        "total_rows_known",
+    }
 
 
 def test_run_query_correct_results(with_ledger):
-    from server import run_query
+    from beanie_mcp.server import run_query
 
     result = run_query("SELECT DISTINCT account ORDER BY account")
     accounts = [row[0] for row in result["rows"]]
@@ -146,18 +199,39 @@ def test_run_query_correct_results(with_ledger):
 
 
 def test_run_query_no_ledger_raises(no_ledger):
-    from server import run_query
+    from beanie_mcp.server import run_query
 
     with pytest.raises(RuntimeError, match="BEANCOUNT_LEDGER"):
         run_query("SELECT account")
 
 
 def test_run_query_invalid_bql_returns_error(with_ledger):
-    from server import run_query
+    from beanie_mcp.server import run_query
 
     result = run_query("THIS IS NOT VALID BQL")
     assert "error" in result
     assert isinstance(result["error"], str)
+    assert result["error_type"] == "bql"
+
+
+def test_run_query_broken_ledger_returns_error(tmp_path, monkeypatch):
+    bean = tmp_path / "broken.bean"
+    _write_bean(
+        bean,
+        """
+        2022-01-01 open Assets:Cash USD
+        2022-01-02 balance Assets:Cash 999.00 USD
+        """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import run_query
+
+    result = run_query("SELECT account")
+    assert result["error_type"] == "ledger"
+    assert result["errors"]
+    assert "Balance" in result["errors"][0]["type"]
+    _reset_manager()
 
 
 def test_run_query_row_limit(tmp_path, monkeypatch):
@@ -176,19 +250,23 @@ def test_run_query_row_limit(tmp_path, monkeypatch):
     bean.write_text("\n".join(lines))
     monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
     _reset_manager()
-    from server import run_query
+    from beanie_mcp.server import run_query
 
     result = run_query("SELECT date, narration, account, position")
     assert len(result["rows"]) == 200
     assert result["truncated"] is True
-    assert result["total_rows"] == 402  # 201 transactions × 2 postings each
+    assert result["returned_rows"] == 200
+    assert result["total_rows"] is None
+    assert result["total_rows_known"] is False
     _reset_manager()
 
 
 def test_bean_check_clean(with_ledger):
-    from server import bean_check
+    from beanie_mcp.server import bean_check
 
-    assert "clean" in bean_check().lower()
+    result = bean_check()
+    assert result["ok"] is True
+    assert "clean" in result["message"].lower()
 
 
 def test_bean_check_with_errors(tmp_path, monkeypatch):
@@ -198,10 +276,14 @@ def test_bean_check_with_errors(tmp_path, monkeypatch):
     bean.write_text(content)
     monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
     _reset_manager()
-    from server import bean_check
+    from beanie_mcp.server import bean_check
 
     result = bean_check()
-    assert "999" in result or "balance" in result.lower()
+    assert result["ok"] is False
+    assert any(
+        "999" in str(error["message"]) or "balance" in str(error["message"]).lower()
+        for error in result["errors"]
+    )
     _reset_manager()
 
 
@@ -213,7 +295,7 @@ def test_get_accounts_returns_all_accounts(tmp_path, monkeypatch):
     bean.write_text("\n".join(lines))
     monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
     _reset_manager()
-    from server import get_accounts
+    from beanie_mcp.server import get_accounts
 
     result = get_accounts()
     rows = result.strip().split("\n")
@@ -224,8 +306,29 @@ def test_get_accounts_returns_all_accounts(tmp_path, monkeypatch):
 
 
 def test_get_tables_returns_expected_tables(with_ledger):
-    from server import get_tables
+    from beanie_mcp.server import get_tables
 
     tables = get_tables().strip().split("\n")
     for expected in ["accounts", "balances", "entries", "postings", "transactions"]:
         assert expected in tables
+
+
+def test_list_accounts_returns_structured_result(tmp_path, monkeypatch):
+    bean = tmp_path / "accounts.bean"
+    _write_bean(
+        bean,
+        """
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Expenses:Food USD
+        """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import list_accounts
+
+    result = list_accounts()
+    assert result == {
+        "accounts": ["Assets:Cash", "Expenses:Food"],
+        "count": 2,
+    }
+    _reset_manager()

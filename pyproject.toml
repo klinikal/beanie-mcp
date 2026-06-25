@@ -1,22 +1,49 @@
 [project]
 name = "beanie-mcp"
 version = "0.1.0"
-description = "MCP server for querying Beancount v3 ledgers in plain English"
+description = "MCP server for querying Beancount v3 ledgers with BQL"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
+license = "MIT"
+authors = [{ name = "klinikal" }]
+keywords = ["beancount", "beanquery", "mcp", "finance", "accounting"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
 dependencies = [
     "beancount>=3.1.0",
     "beanquery>=0.2.0",
-    "mcp[cli]>=1.5.0",
+    "mcp[cli]>=1.23.0",
     "pydantic-settings>=2.0.0",
     "watchdog>=3.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/klinikal/beanie-mcp"
+Repository = "https://github.com/klinikal/beanie-mcp"
+Issues = "https://github.com/klinikal/beanie-mcp/issues"
+
+[project.scripts]
+beanie-mcp = "beanie_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [dependency-groups]
 dev = [
-    "pytest>=8.3.5",
+    "pytest>=9.0.3",
     "ruff>=0.8.5",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

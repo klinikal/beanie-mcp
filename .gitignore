@@ -26,6 +26,9 @@ wheels/
 env/
 venv/
 ENV/
+# Internal dev docs
+tasks/
+
 # IDE
 .idea/
 .vscode/

@@ -151,18 +151,49 @@ The upstream `beanquery-mcp` is a solid proof-of-concept. beanie-mcp hardens it 
 
 > **Beancount v3 only.** If you're on v2, use the upstream [vanto/beanquery-mcp](https://github.com/vanto/beanquery-mcp).
 
-## Setup
+## Install
+
+Clone the repo and install the Python dependencies with `uv`:
+
+```bash
+git clone https://github.com/klinikal/beanie-mcp.git
+cd beanie-mcp
+uv sync
+```
+
+Find the absolute path to your main Beancount file. For example:
+
+```bash
+realpath ~/finance/main.bean
+```
+
+Use that full path as `BEANCOUNT_LEDGER` in the MCP config below. Relative paths are deliberately avoided because MCP clients may start the server from a different working directory.
+
+You can smoke-test the server before adding it to Claude:
+
+```bash
+BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uv run beanie-mcp
+```
+
+The command starts an MCP stdio server and waits for a client. Press `Ctrl+C` to stop it.
+
+## Configure Claude
 
 ### Claude Code
 
-Add to your Claude Code MCP config:
+Add this to your Claude Code MCP config:
 
 ```json
 {
   "mcpServers": {
     "beanie": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/beanie-mcp", "beanie-mcp"],
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/beanie-mcp",
+        "beanie-mcp"
+      ],
       "env": {
         "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
       }
@@ -180,7 +211,12 @@ Use the same command shape in your Claude Desktop MCP config:
   "mcpServers": {
     "beanie": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/beanie-mcp", "beanie-mcp"],
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/beanie-mcp",
+        "beanie-mcp"
+      ],
       "env": {
         "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
       }
@@ -189,11 +225,65 @@ Use the same command shape in your Claude Desktop MCP config:
 }
 ```
 
-### Development / inspection
+Restart Claude after changing MCP config. MCP clients usually read the tool list only when they start.
+
+## Verify
+
+Once connected, ask Claude to run:
+
+- `bean_check`
+- `list_accounts`
+- `list_tables`
+
+Then try a small BQL query:
+
+```sql
+SELECT account, sum(position)
+WHERE account ~ "Expenses"
+GROUP BY account
+LIMIT 20
+```
+
+If `bean_check` reports errors, fix the ledger first. `run_query` refuses to query a broken ledger so Claude does not mistake an invalid ledger for an empty result.
+
+## Update
+
+To update an existing local checkout:
 
 ```bash
-BEANCOUNT_LEDGER=/path/to/ledger.bean uv run beanie-mcp
-BEANCOUNT_LEDGER=/path/to/ledger.bean uv run mcp dev src/beanie_mcp/server.py
+cd /absolute/path/to/beanie-mcp
+git pull
+uv sync
+```
+
+Restart Claude after updating.
+
+## Troubleshooting
+
+**Claude cannot find `uv`**  
+Use the absolute path to `uv` in your config. Find it with:
+
+```bash
+which uv
+```
+
+Then replace `"command": "uv"` with something like `"command": "/opt/homebrew/bin/uv"`.
+
+**`No ledger configured`**  
+Set `BEANCOUNT_LEDGER` in the MCP config `env` block. It must point to your main `.bean` file.
+
+**Ledger file not found**  
+Use absolute paths for both `/absolute/path/to/beanie-mcp` and `BEANCOUNT_LEDGER`. `~` may not expand inside every MCP client.
+
+**Tool list did not change after updating**  
+Restart Claude. Long-running MCP clients often keep the old tool list until they reconnect.
+
+## Development
+
+Run the MCP inspector:
+
+```bash
+BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uv run mcp dev src/beanie_mcp/server.py
 ```
 
 ## Running tests

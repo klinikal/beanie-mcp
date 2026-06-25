@@ -1,12 +1,12 @@
 # beanie-mcp
 
-An MCP server that lets Claude inspect and query [Beancount](https://beancount.github.io/) v3 ledgers with BQL. Point it at your `.bean` file, connect it to Claude, and ask questions about your finances while the server handles ledger loading, validation, and structured query results.
+An MCP server that lets AI agents inspect and query [Beancount](https://beancount.github.io/) v3 ledgers with BQL. Point it at your `.bean` file, connect it to any MCP-capable client, and ask questions about your finances while the server handles ledger loading, validation, and structured query results.
 
 ---
 
 ## What it does
 
-Once connected, Claude can query your ledger directly without you touching a terminal. Under the hood, the `run_query` tool accepts [BQL](https://beancount.github.io/docs/beancount_query_language.html), not arbitrary natural language, so Claude translates your question into a valid query:
+Once connected, your agent can query your ledger directly without you touching a terminal. Under the hood, the `run_query` tool accepts [BQL](https://beancount.github.io/docs/beancount_query_language.html), not arbitrary natural language, so the agent translates your question into a valid query:
 
 > *"What did I spend on restaurants last month?"*
 > *"What's my current net worth across all accounts?"*
@@ -128,19 +128,19 @@ or:
 }
 ```
 
-## What's different
+## Design goals
 
-The upstream `beanquery-mcp` is a solid proof-of-concept. beanie-mcp hardens it for real-world use:
+beanie-mcp is designed for real-world ledgers, not just small demos:
 
-- **Structured JSON output** - switched from `BQLShell` text tables to the beanquery DB-API (`beanquery.connect()`). Claude gets columns and stringified rows it can actually work with, not a text table to parse.
+- **Structured JSON output** - switched from `BQLShell` text tables to the beanquery DB-API (`beanquery.connect()`). Agents get columns and stringified rows they can actually work with, not a text table to parse.
 - **Fail-loud ledger errors** - `run_query` refuses to query ledgers with loader errors or failed balance assertions instead of returning plausible empty results.
 - **Structured `bean_check` tool** - surfaces loader errors and failed balance assertions as machine-readable JSON with file, line, type, and message.
 - **Resource-safe row limit** - query responses cap at 200 rows and only fetch one extra row to detect truncation.
 - **Account tools bypass the cap** - account enumeration fetches the full declared account list regardless of ledger size.
-- **Removed `set_ledger_file`** - the upstream tool let the LLM point the server at any file on your filesystem at runtime. Removed. Ledger path is locked to the `BEANCOUNT_LEDGER` env var set at startup.
+- **Locked ledger path** - the ledger path is fixed by the `BEANCOUNT_LEDGER` env var at startup, so the agent cannot point the server at arbitrary files on your filesystem.
 - **include-aware cache** - the ledger is only re-parsed when the root file or any loaded `include` file changes, not on every query.
 - **Watchdog auto-reload** - file system watcher invalidates the cache when `.bean` files are modified, created, moved, or deleted.
-- **Explicit `pydantic-settings` dependency** - the upstream omitted this from `pyproject.toml`; it worked only as a transitive dependency that could silently break.
+- **Explicit `pydantic-settings` dependency** - configuration loading does not rely on accidental transitive dependencies.
 - **Python `<3.14` ceiling** - beancount 3.x has no prebuilt wheel for Python 3.14; building from source fails on macOS (Apple ships bison 2.3, beancount needs >=3.8). The ceiling prevents a confusing build failure.
 
 ## Requirements
@@ -149,7 +149,7 @@ The upstream `beanquery-mcp` is a solid proof-of-concept. beanie-mcp hardens it 
 - [uv](https://docs.astral.sh/uv/)
 - Beancount v3 ledger (`.bean` file)
 
-> **Beancount v3 only.** If you're on v2, use the upstream [vanto/beanquery-mcp](https://github.com/vanto/beanquery-mcp).
+> **Beancount v3 is the supported target.** Beancount v2 ledgers may not work; if you are on v2, use a v2-compatible MCP server or query tool.
 
 ## Install
 
@@ -169,7 +169,7 @@ realpath ~/finance/main.bean
 
 Use that full path as `BEANCOUNT_LEDGER` in the MCP config below. Relative paths are deliberately avoided because MCP clients may start the server from a different working directory.
 
-You can smoke-test the server before adding it to Claude:
+You can smoke-test the server before adding it to an MCP client:
 
 ```bash
 BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uv run beanie-mcp
@@ -177,11 +177,32 @@ BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uv run beanie-mcp
 
 The command starts an MCP stdio server and waits for a client. Press `Ctrl+C` to stop it.
 
-## Configure Claude
+## Configure an MCP client
 
-### Claude Code
+beanie-mcp is not tied to a particular model or agent. It is a standard local MCP stdio server. Any client that can launch a local MCP command with environment variables should be able to use it. That includes Claude Code/Desktop-style configs, Codex-style agent runners, Cursor-style IDE agents, Gemini-based agents, and other MCP-compatible tools. The exact config UI or file format depends on the client.
 
-Add this to your Claude Code MCP config:
+The generic command is:
+
+```json
+{
+  "command": "uv",
+  "args": [
+    "run",
+    "--directory",
+    "/absolute/path/to/beanie-mcp",
+    "beanie-mcp"
+  ],
+  "env": {
+    "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
+  }
+}
+```
+
+Some clients wrap that command in an `mcpServers` object. Others have a GUI where you enter the same command, args, and env vars separately.
+
+### Example: Claude Code / Claude Desktop
+
+For clients that use an `mcpServers` JSON block, add:
 
 ```json
 {
@@ -202,34 +223,48 @@ Add this to your Claude Code MCP config:
 }
 ```
 
-### Claude Desktop
+### Example: Codex
 
-Use the same command shape in your Claude Desktop MCP config:
+Add a server entry to your Codex config:
+
+```toml
+[mcp_servers.beanie]
+command = "uv"
+args = [
+  "run",
+  "--directory",
+  "/absolute/path/to/beanie-mcp",
+  "beanie-mcp",
+]
+
+[mcp_servers.beanie.env]
+BEANCOUNT_LEDGER = "/absolute/path/to/your/ledger/main.bean"
+```
+
+### Other MCP clients
+
+Use the same command, args, and env vars wherever your client defines local MCP servers:
 
 ```json
 {
-  "mcpServers": {
-    "beanie": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "/absolute/path/to/beanie-mcp",
-        "beanie-mcp"
-      ],
-      "env": {
-        "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
-      }
-    }
+  "command": "uv",
+  "args": [
+    "run",
+    "--directory",
+    "/absolute/path/to/beanie-mcp",
+    "beanie-mcp"
+  ],
+  "env": {
+    "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
   }
 }
 ```
 
-Restart Claude after changing MCP config. MCP clients usually read the tool list only when they start.
+Restart the client after changing MCP config. MCP clients usually read the tool list only when they start.
 
 ## Verify
 
-Once connected, ask Claude to run:
+Once connected, ask your agent to run:
 
 - `bean_check`
 - `list_accounts`
@@ -244,7 +279,7 @@ GROUP BY account
 LIMIT 20
 ```
 
-If `bean_check` reports errors, fix the ledger first. `run_query` refuses to query a broken ledger so Claude does not mistake an invalid ledger for an empty result.
+If `bean_check` reports errors, fix the ledger first. `run_query` refuses to query a broken ledger so the agent does not mistake an invalid ledger for an empty result.
 
 ## Update
 
@@ -256,11 +291,11 @@ git pull
 uv sync
 ```
 
-Restart Claude after updating.
+Restart your MCP client after updating.
 
 ## Troubleshooting
 
-**Claude cannot find `uv`**  
+**The client cannot find `uv`**  
 Use the absolute path to `uv` in your config. Find it with:
 
 ```bash
@@ -276,7 +311,7 @@ Set `BEANCOUNT_LEDGER` in the MCP config `env` block. It must point to your main
 Use absolute paths for both `/absolute/path/to/beanie-mcp` and `BEANCOUNT_LEDGER`. `~` may not expand inside every MCP client.
 
 **Tool list did not change after updating**  
-Restart Claude. Long-running MCP clients often keep the old tool list until they reconnect.
+Restart the client. Long-running MCP clients often keep the old tool list until they reconnect.
 
 ## Development
 
@@ -296,7 +331,7 @@ uv build
 
 ## Privacy
 
-This tool sends parts of your Beancount ledger to whatever LLM you connect it to. Only connect it to a provider you trust with your financial data. If you use Claude via Anthropic's API or Claude.ai, Anthropic's standard data handling policies apply.
+This tool sends parts of your Beancount ledger to whatever model/provider your MCP client uses. Only connect it to a provider and client you trust with your financial data. The relevant data handling policy is the one for the model/provider/client you choose.
 
 > You are responsible for your financial data. Don't connect this to a service you wouldn't trust with your bank statements. Run this at your own risk.
 

@@ -19,8 +19,8 @@ beanie-mcp exposes two tools and two resources to Claude:
 |---|---|---|
 | `run_query` | Tool | Run a BQL query. Returns structured JSON — columns, rows, and a truncation flag if results exceed 200 rows. |
 | `bean_check` | Tool | Run bean-check on the ledger. Returns a clean confirmation or a list of errors with file location and line number. |
-| `beanquery://accounts` | Resource | All accounts in the ledger — not subject to the row cap. |
-| `beanquery://tables` | Resource | BQL-accessible tables (accounts, balances, entries, postings, etc.). |
+| `beanie://accounts` | Resource | All accounts in the ledger — not subject to the row cap. |
+| `beanie://tables` | Resource | BQL-accessible tables (accounts, balances, entries, postings, etc.). |
 
 ## What's different
 

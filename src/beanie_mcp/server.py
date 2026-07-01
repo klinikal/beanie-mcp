@@ -1,7 +1,10 @@
 """beanie-mcp — MCP server for querying Beancount v3 ledgers with BQL."""
 
 from contextlib import asynccontextmanager
+from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
+from typing import Annotated
 
 import beanquery
 from mcp.server.fastmcp import FastMCP
@@ -55,7 +58,7 @@ def _ledger_error_response(errors: list[dict[str, object]]) -> dict:
     }
 
 
-def _run_bql(query: str) -> dict:
+def _run_bql(query: str, offset: int = 0) -> dict:
     mgr = _require_manager()
     conn = mgr.connection()
     errors = mgr.connection_errors()
@@ -68,6 +71,7 @@ def _run_bql(query: str) -> dict:
         return {"error": str(exc), "error_type": "bql"}
 
     columns = [col.name for col in cursor.description] if cursor.description else []
+    skipped = cursor.fetchmany(offset) if offset > 0 else []
     fetched_rows = cursor.fetchmany(ROW_LIMIT + 1)
     truncated = len(fetched_rows) > ROW_LIMIT
     rows = fetched_rows[:ROW_LIMIT]
@@ -77,7 +81,8 @@ def _run_bql(query: str) -> dict:
         "rows": [[str(v) for v in row] for row in rows],
         "truncated": truncated,
         "returned_rows": len(rows),
-        "total_rows": None if truncated else len(rows),
+        "offset": offset,
+        "total_rows": None if truncated else len(skipped) + len(rows),
         "total_rows_known": not truncated,
     }
 
@@ -92,6 +97,18 @@ def run_query(
             "BQL is SQL-like, but FROM is a date/filter clause, not a table selector."
         )
     ),
+    offset: Annotated[
+        int,
+        Field(
+            ge=0,
+            description=(
+                "Number of rows to skip before returning results. BQL has no "
+                "OFFSET keyword, so use this to page past the 200-row cap: if "
+                "`truncated` is true, call again with offset += returned_rows to "
+                "fetch the next page."
+            ),
+        ),
+    ] = 0,
 ) -> dict:
     """Query the Beancount ledger using BQL.
 
@@ -100,10 +117,11 @@ def run_query(
       rows       — list of rows, each a list of value strings
       truncated  — true if the result was cut at 200 rows
       returned_rows — number of rows returned
+      offset     — the offset this call was made with
       total_rows — exact count only when not truncated; otherwise null
       error      — present (instead of the above) if the ledger or BQL is invalid
     """
-    return _run_bql(query)
+    return _run_bql(query, offset)
 
 
 @mcp.tool()
@@ -161,6 +179,116 @@ def list_tables() -> dict:
     }
 
 
+@mcp.tool()
+def find_unmatched_transfers(
+    account: str = Field(
+        description=(
+            "Exact name of the staging/suspense account to reconcile, e.g. "
+            "'Equity:Transfers:Pending'."
+        )
+    ),
+    window_days: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Max days apart two legs can be and still count as a match.",
+        ),
+    ] = 2,
+    min_amount: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Ignore postings below this absolute amount threshold.",
+        ),
+    ] = 0,
+    currency: Annotated[
+        str | None, Field(description="Restrict matching to this currency only.")
+    ] = None,
+) -> dict:
+    """Greedy-match postings to a staging/suspense account.
+
+    Matches postings by opposite sign, equal amount, same currency, and date
+    within `window_days`. Returns matched_count, orphan_count, and the
+    unmatched ("orphan") postings — not subject to the 200-row query cap.
+    """
+    if '"' in account:
+        return {
+            "error": "account must not contain a quote character",
+            "error_type": "bql",
+        }
+
+    mgr = _require_manager()
+    errors = mgr.connection_errors()
+    if errors:
+        return _ledger_error_response(errors)
+
+    conn = mgr.connection()
+    try:
+        cursor = conn.execute(
+            f'SELECT date, narration, position '
+            f'WHERE account = "{account}" ORDER BY date'
+        )
+    except beanquery.Error as exc:
+        return {"error": str(exc), "error_type": "bql"}
+
+    min_amount_decimal = Decimal(str(min_amount))
+    postings = []
+    for date, narration, position in cursor.fetchall():
+        amount = position.units.number
+        posting_currency = position.units.currency
+        if currency and posting_currency != currency:
+            continue
+        if abs(amount) < min_amount_decimal:
+            continue
+        postings.append(
+            {
+                "date": date,
+                "narration": narration,
+                "amount": amount,
+                "currency": posting_currency,
+            }
+        )
+
+    window = timedelta(days=window_days)
+    unmatched = list(postings)
+    matched_count = 0
+    i = 0
+    while i < len(unmatched):
+        p = unmatched[i]
+        match_idx = None
+        for j in range(i + 1, len(unmatched)):
+            q = unmatched[j]
+            if (
+                q["currency"] == p["currency"]
+                and q["amount"] == -p["amount"]
+                and abs(q["date"] - p["date"]) <= window
+            ):
+                match_idx = j
+                break
+        if match_idx is not None:
+            del unmatched[match_idx]
+            del unmatched[i]
+            matched_count += 1
+        else:
+            i += 1
+
+    orphans = [
+        {
+            "date": p["date"].isoformat(),
+            "amount": str(p["amount"]),
+            "currency": p["currency"],
+            "narration": p["narration"],
+        }
+        for p in unmatched
+    ]
+
+    return {
+        "matched_count": matched_count,
+        "orphans": orphans,
+        "orphan_count": len(orphans),
+    }
+
+
 @mcp.resource(
     "beanie://accounts",
     description=(
@@ -204,6 +332,15 @@ BQL looks SQL-like, but it is not general SQL.
 `FROM` is a date/filter clause, not a table selector. Do not assume
 `SELECT ... FROM accounts` queries the accounts table. Use `list_accounts`
 or `beanie://accounts` for account metadata.
+
+## Credit-normal accounts (Income, Liabilities, Equity)
+
+Beancount stores Income, Liabilities, and Equity accounts in credit-normal
+form internally. A row-level query on one of these accounts shows each
+posting's stored sign correctly, but `sum(position)` aggregates over many
+postings can read as inverted from what you'd naively expect. If an
+aggregate sign looks surprising, cross-check with a row-level (non-
+aggregated) query on the same account before reporting a number downstream.
 
 ## Useful examples
 

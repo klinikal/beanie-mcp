@@ -183,6 +183,7 @@ def test_run_query_returns_dict(with_ledger):
         "rows",
         "truncated",
         "returned_rows",
+        "offset",
         "total_rows",
         "total_rows_known",
     }
@@ -261,6 +262,57 @@ def test_run_query_row_limit(tmp_path, monkeypatch):
     _reset_manager()
 
 
+def test_run_query_offset_returns_next_page(tmp_path, monkeypatch):
+    lines = [
+        "2022-01-01 open Assets:Cash USD",
+        "2022-01-01 open Expenses:Food USD",
+    ]
+    for i in range(201):
+        lines += [
+            f'2022-01-{(i % 28) + 1:02d} * "Txn {i}"',
+            "  Assets:Cash    -1.00 USD",
+            "  Expenses:Food   1.00 USD",
+        ]
+    bean = tmp_path / "big.bean"
+    bean.write_text("\n".join(lines))
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import run_query
+
+    # 201 transactions x 2 postings each = 402 total rows.
+    result = run_query("SELECT date, narration, account, position", offset=400)
+    assert len(result["rows"]) == 2
+    assert result["truncated"] is False
+    assert result["offset"] == 400
+    assert result["total_rows"] == 402
+    assert result["total_rows_known"] is True
+    _reset_manager()
+
+
+def test_run_query_offset_past_end_returns_empty(tmp_path, monkeypatch):
+    lines = [
+        "2022-01-01 open Assets:Cash USD",
+        "2022-01-01 open Expenses:Food USD",
+    ]
+    for i in range(201):
+        lines += [
+            f'2022-01-{(i % 28) + 1:02d} * "Txn {i}"',
+            "  Assets:Cash    -1.00 USD",
+            "  Expenses:Food   1.00 USD",
+        ]
+    bean = tmp_path / "big.bean"
+    bean.write_text("\n".join(lines))
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import run_query
+
+    result = run_query("SELECT date, narration, account, position", offset=500)
+    assert len(result["rows"]) == 0
+    assert result["truncated"] is False
+    assert result["total_rows"] == 402
+    _reset_manager()
+
+
 def test_bean_check_clean(with_ledger):
     from beanie_mcp.server import bean_check
 
@@ -331,4 +383,111 @@ def test_list_accounts_returns_structured_result(tmp_path, monkeypatch):
         "accounts": ["Assets:Cash", "Expenses:Food"],
         "count": 2,
     }
+    _reset_manager()
+
+
+# ---------------------------------------------------------------------------
+# find_unmatched_transfers
+# ---------------------------------------------------------------------------
+
+
+def _write_staging_ledger(tmp_path, entries: str) -> Path:
+    bean = tmp_path / "staging.bean"
+    header = """
+        2022-01-01 open Assets:Bank:Checking
+        2022-01-01 open Assets:Bank:Savings
+        2022-01-01 open Equity:Transfers:Pending
+    """
+    _write_bean(bean, header + entries)
+    return bean
+
+
+def test_find_unmatched_transfers_matches_pair(tmp_path, monkeypatch):
+    bean = _write_staging_ledger(
+        tmp_path,
+        """
+        2022-02-01 * "Send"
+          Assets:Bank:Checking       -500.00 USD
+          Equity:Transfers:Pending    500.00 USD
+
+        2022-02-02 * "Receive"
+          Assets:Bank:Savings         500.00 USD
+          Equity:Transfers:Pending   -500.00 USD
+        """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import find_unmatched_transfers
+
+    result = find_unmatched_transfers("Equity:Transfers:Pending")
+    assert result["matched_count"] == 1
+    assert result["orphan_count"] == 0
+    assert result["orphans"] == []
+    _reset_manager()
+
+
+def test_find_unmatched_transfers_reports_orphan(tmp_path, monkeypatch):
+    bean = _write_staging_ledger(
+        tmp_path,
+        """
+        2022-02-01 * "Send"
+          Assets:Bank:Checking       -500.00 USD
+          Equity:Transfers:Pending    500.00 USD
+        """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import find_unmatched_transfers
+
+    result = find_unmatched_transfers("Equity:Transfers:Pending")
+    assert result["matched_count"] == 0
+    assert result["orphan_count"] == 1
+    assert result["orphans"][0]["amount"] == "500.00"
+    assert result["orphans"][0]["currency"] == "USD"
+    _reset_manager()
+
+
+def test_find_unmatched_transfers_respects_window(tmp_path, monkeypatch):
+    bean = _write_staging_ledger(
+        tmp_path,
+        """
+        2022-02-01 * "Send"
+          Assets:Bank:Checking       -500.00 USD
+          Equity:Transfers:Pending    500.00 USD
+
+        2022-02-10 * "Receive late"
+          Assets:Bank:Savings         500.00 USD
+          Equity:Transfers:Pending   -500.00 USD
+        """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import find_unmatched_transfers
+
+    result = find_unmatched_transfers("Equity:Transfers:Pending", window_days=2)
+    assert result["matched_count"] == 0
+    assert result["orphan_count"] == 2
+    _reset_manager()
+
+
+def test_find_unmatched_transfers_currency_filter(tmp_path, monkeypatch):
+    bean = _write_staging_ledger(
+        tmp_path,
+        """
+        2022-02-01 * "Send USD"
+          Assets:Bank:Checking       -500.00 USD
+          Equity:Transfers:Pending    500.00 USD
+
+        2022-02-01 * "Send EUR"
+          Assets:Bank:Checking       -500.00 EUR
+          Equity:Transfers:Pending    500.00 EUR
+        """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import find_unmatched_transfers
+
+    result = find_unmatched_transfers("Equity:Transfers:Pending", currency="USD")
+    assert result["orphan_count"] == 1
+    assert result["orphans"][0]["currency"] == "USD"
     _reset_manager()

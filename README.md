@@ -13,14 +13,15 @@ Once connected, your agent can query your ledger directly without you touching a
 > *"Are there any errors or failed balance assertions in my ledger?"*
 > *"Show me all transactions in my brokerage account this tax year."*
 
-beanie-mcp exposes four tools and three resources:
+beanie-mcp exposes five tools and three resources:
 
 | Name | Type | Description |
 |---|---|---|
-| `run_query` | Tool | Run a BQL query. Returns structured JSON with columns, stringified rows, returned row count, and truncation metadata. Invalid BQL or broken ledgers return an `error` field instead. |
+| `run_query` | Tool | Run a BQL query. Returns structured JSON with columns, stringified rows, returned row count, and truncation metadata. Supports an `offset` param to page past the 200-row cap. Invalid BQL or broken ledgers return an `error` field instead. |
 | `bean_check` | Tool | Run bean-check on the ledger. Returns structured `{ ok, message, errors }` JSON. |
 | `list_accounts` | Tool | Return all declared accounts as structured JSON, without the query row cap. |
 | `list_tables` | Tool | Return beanquery table names plus the key `FROM` caveat. |
+| `find_unmatched_transfers` | Tool | Greedy-match postings to a staging/suspense account (opposite sign, equal amount, date within a window) and report unmatched orphans. |
 | `beanie://accounts` | Resource | All accounts in the ledger, one per line. |
 | `beanie://tables` | Resource | BQL-accessible table names. |
 | `beanie://bql-guide` | Resource | Short BQL guide for agents, including caveats and examples. |
@@ -34,6 +35,8 @@ SELECT account FROM accounts ORDER BY account
 ```
 
 For account discovery, use the `list_accounts` tool or `beanie://accounts` resource instead. For table discovery, use `list_tables` or `beanie://tables`.
+
+Income, Liabilities, and Equity accounts are credit-normal in Beancount. A row-level query shows each posting's stored sign correctly, but `sum(position)` aggregates on these account types can read as inverted from what you'd expect — cross-check with a row-level query if an aggregate sign looks surprising.
 
 Useful query examples:
 
@@ -56,6 +59,24 @@ WHERE account ~ "Assets|Liabilities"
 GROUP BY account
 ```
 
+## Reconciling staging accounts
+
+BQL has no self-join, so matching the two legs of a transfer routed through a staging/suspense account (e.g. `Equity:Transfers:Pending`) can't be expressed as a query. `find_unmatched_transfers` does the greedy matching instead: it pairs postings by opposite sign, equal amount, same currency, and date within `window_days`, and reports whatever's left over as orphans.
+
+```python
+find_unmatched_transfers(account="Equity:Transfers:Pending", window_days=2)
+```
+
+```json
+{
+  "matched_count": 41,
+  "orphans": [
+    {"date": "2024-03-02", "amount": "150.00", "currency": "USD", "narration": "..."}
+  ],
+  "orphan_count": 1
+}
+```
+
 ## Result contract
 
 `run_query` returns one of three shapes.
@@ -68,6 +89,7 @@ Successful query:
   "rows": [["Expenses:Food", "123.45 USD"]],
   "truncated": false,
   "returned_rows": 1,
+  "offset": 0,
   "total_rows": 1,
   "total_rows_known": true
 }
@@ -99,7 +121,7 @@ Invalid BQL:
 }
 ```
 
-Rows are capped at 200. To keep broad queries from materialising an entire ledger, beanie-mcp fetches at most 201 rows. When `truncated` is `true`, `total_rows` is `null` and `total_rows_known` is `false`; add a narrower `WHERE`, `ORDER BY`, or `LIMIT` clause if you need a smaller answer. Row values are returned as strings so MCP clients get stable JSON even when beanquery returns Python dates, decimals, inventories, or other typed Beancount values.
+Rows are capped at 200. To keep broad queries from materialising an entire ledger, beanie-mcp fetches at most 201 rows. When `truncated` is `true`, `total_rows` is `null` and `total_rows_known` is `false`; add a narrower `WHERE`, `ORDER BY`, or `LIMIT` clause if you need a smaller answer — or page through the full result with `offset`: call again with `offset` set to the sum of `returned_rows` seen so far until `truncated` comes back `false`. BQL itself has no `OFFSET` keyword, so this is handled server-side. Row values are returned as strings so MCP clients get stable JSON even when beanquery returns Python dates, decimals, inventories, or other typed Beancount values.
 
 `bean_check` returns:
 

@@ -13,7 +13,7 @@ Once connected, your agent can query your ledger directly without you touching a
 > *"Are there any errors or failed balance assertions in my ledger?"*
 > *"Show me all transactions in my brokerage account this tax year."*
 
-beanie-mcp exposes six tools and four resources:
+beanie-mcp exposes nine tools and five resources:
 
 | Name | Type | Description |
 |---|---|---|
@@ -21,12 +21,14 @@ beanie-mcp exposes six tools and four resources:
 | `bean_check` | Tool | Run bean-check on the ledger. Returns structured `{ ok, message, errors }` JSON. |
 | `list_accounts` | Tool | Return all declared accounts as structured JSON, without the query row cap. |
 | `list_tables` | Tool | Return beanquery table names plus the key `FROM` caveat. |
+| `list_prices` | Tool | Latest known price for every commodity with price history, without the 200-row cap. |
 | `find_unmatched_transfers` | Tool | Greedy-match postings to a staging/suspense account (opposite sign, equal amount, date within a window) and report unmatched orphans. |
 | `ledger_info` | Tool | Orientation facts before querying: operating currency, title, date span, account count/roots, today's date. |
 | `net_worth` | Tool | Net worth (Assets + Liabilities) converted to the operating currency. Optional `as_of` date. |
 | `account_balance` | Tool | Balance of an account (and its subtree) converted to the operating currency. Optional `as_of` date. |
 | `beanie://accounts` | Resource | All accounts in the ledger, one per line. |
 | `beanie://tables` | Resource | BQL-accessible table names. |
+| `beanie://prices` | Resource | JSON-encoded `list_prices()` output. |
 | `beanie://bql-guide` | Resource | Short BQL guide for agents, including caveats and examples. |
 | `beanie://context` | Resource | JSON-encoded `ledger_info()` output. |
 

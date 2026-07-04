@@ -384,6 +384,56 @@ def test_get_tables_returns_expected_tables(with_ledger):
         assert expected in tables
 
 
+@pytest.fixture()
+def bean_file_prices(tmp_path):
+    bean = tmp_path / "prices.bean"
+    _write_bean(
+        bean,
+        """
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 price AAPL 150.00 USD
+        2022-06-01 price AAPL 175.00 USD
+        2022-01-01 price GOOG 2500.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_prices_ledger(bean_file_prices, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_prices))
+    _reset_manager()
+    yield bean_file_prices
+    _reset_manager()
+
+
+def test_list_prices_returns_latest_per_commodity(with_prices_ledger):
+    from beanie_mcp.server import list_prices
+
+    result = list_prices()
+    assert result["count"] == 2
+    by_commodity = {p["commodity"]: p for p in result["prices"]}
+    assert by_commodity["AAPL"]["date"] == "2022-06-01"
+    assert by_commodity["AAPL"]["price"] == "175.00 USD"
+    assert by_commodity["GOOG"]["date"] == "2022-01-01"
+
+
+def test_list_prices_empty_ledger(with_ledger):
+    from beanie_mcp.server import list_prices
+
+    result = list_prices()
+    assert result == {"prices": [], "count": 0}
+
+
+def test_get_prices_resource_returns_valid_json(with_prices_ledger):
+    import json
+
+    from beanie_mcp.server import get_prices
+
+    payload = json.loads(get_prices())
+    assert payload["count"] == 2
+
+
 def test_bql_guide_documents_conversion():
     from beanie_mcp.server import get_bql_guide
 

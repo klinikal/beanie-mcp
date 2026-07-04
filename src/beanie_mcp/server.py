@@ -348,6 +348,27 @@ def list_tables() -> dict:
     }
 
 
+@mcp.tool(
+    description="Latest known price for every commodity with price history in the ledger."
+)
+def list_prices() -> dict:
+    """Latest price per commodity, from the prices table. Not subject to
+    the 200-row query cap.
+    """
+    conn = _require_manager().connection()
+    latest: dict[str, tuple] = {}
+    for _, price_date, currency, amount in conn.tables["prices"]:
+        prev = latest.get(currency)
+        if prev is None or price_date > prev[0]:
+            latest[currency] = (price_date, amount)
+
+    prices = [
+        {"commodity": currency, "date": price_date.isoformat(), "price": str(amount)}
+        for currency, (price_date, amount) in sorted(latest.items())
+    ]
+    return {"prices": prices, "count": len(prices)}
+
+
 @mcp.tool()
 def find_unmatched_transfers(
     account: str = Field(
@@ -484,6 +505,16 @@ def get_accounts() -> str:
 def get_tables() -> str:
     """BQL-accessible tables (accounts, balances, entries, postings, prices, etc.)."""
     return "\n".join(_table_names())
+
+
+@mcp.resource(
+    "beanie://prices",
+    description="Latest known price for every commodity, as JSON.",
+    mime_type="application/json",
+)
+def get_prices() -> str:
+    """JSON-encoded list_prices() output."""
+    return json.dumps(list_prices())
 
 
 @mcp.resource(

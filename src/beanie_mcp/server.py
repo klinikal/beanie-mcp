@@ -166,9 +166,10 @@ def run_query(
 def bean_check() -> dict:
     """Validate the ledger with bean-check.
 
-    Returns structured status and loader/balance errors.
+    Returns structured status and loader/balance errors. Reuses the
+    cached ledger connection instead of re-parsing the ledger from disk.
     """
-    errors = _require_manager().check()
+    errors = _require_manager().connection_errors()
     if not errors:
         return {
             "ok": True,

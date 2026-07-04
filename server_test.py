@@ -339,6 +339,25 @@ def test_bean_check_with_errors(tmp_path, monkeypatch):
     _reset_manager()
 
 
+def test_bean_check_reuses_cached_connection(with_ledger, monkeypatch):
+    from beanie_mcp import ledger as ledger_module
+    from beanie_mcp.server import bean_check, run_query
+
+    original_load_file = ledger_module.loader.load_file
+    calls = []
+
+    def counting_load_file(*args, **kwargs):
+        calls.append(1)
+        return original_load_file(*args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.loader, "load_file", counting_load_file)
+
+    run_query("SELECT DISTINCT account ORDER BY account")
+    bean_check()
+
+    assert len(calls) == 1
+
+
 def test_get_accounts_returns_all_accounts(tmp_path, monkeypatch):
     lines = ["2022-01-01 open Assets:Root USD"]
     for i in range(250):

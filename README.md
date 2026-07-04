@@ -23,6 +23,8 @@ beanie-mcp exposes six tools and four resources:
 | `list_tables` | Tool | Return beanquery table names plus the key `FROM` caveat. |
 | `find_unmatched_transfers` | Tool | Greedy-match postings to a staging/suspense account (opposite sign, equal amount, date within a window) and report unmatched orphans. |
 | `ledger_info` | Tool | Orientation facts before querying: operating currency, title, date span, account count/roots, today's date. |
+| `net_worth` | Tool | Net worth (Assets + Liabilities) converted to the operating currency. Optional `as_of` date. |
+| `account_balance` | Tool | Balance of an account (and its subtree) converted to the operating currency. Optional `as_of` date. |
 | `beanie://accounts` | Resource | All accounts in the ledger, one per line. |
 | `beanie://tables` | Resource | BQL-accessible table names. |
 | `beanie://bql-guide` | Resource | Short BQL guide for agents, including caveats and examples. |

@@ -473,6 +473,104 @@ def test_list_accounts_returns_structured_result(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# net_worth and account_balance
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def bean_file_net_worth(tmp_path):
+    bean = tmp_path / "ledger.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Assets:Bank USD
+        2022-01-01 open Liabilities:CreditCard USD
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 open Expenses:Food USD
+        2022-01-01 * "open"
+          Assets:Cash    1000.00 USD
+          Equity:Opening -1000.00 USD
+        2022-06-01 * "spend"
+          Assets:Cash    -50.00 USD
+          Expenses:Food   50.00 USD
+        2022-06-05 * "borrow"
+          Assets:Bank    200.00 USD
+          Liabilities:CreditCard -200.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_net_worth_ledger(bean_file_net_worth, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_net_worth))
+    _reset_manager()
+    yield bean_file_net_worth
+    _reset_manager()
+
+
+def test_net_worth_current(with_net_worth_ledger):
+    from beanie_mcp.server import net_worth
+
+    result = net_worth()
+    assert result["currency"] == "USD"
+    assert result["net_worth"] == "950.00 USD"
+    assert result["as_of"] is None
+
+
+def test_net_worth_as_of_excludes_later_transactions(with_net_worth_ledger):
+    from beanie_mcp.server import net_worth
+
+    result = net_worth(as_of="2021-01-01")
+    assert result["net_worth"] == "0.00 USD"
+
+
+def test_net_worth_rejects_malformed_date(with_net_worth_ledger):
+    from beanie_mcp.server import net_worth
+
+    result = net_worth(as_of="not-a-date")
+    assert result["error_type"] == "bql"
+
+
+def test_net_worth_no_operating_currency(tmp_path, monkeypatch):
+    bean = tmp_path / "no_ccy.bean"
+    _write_bean(bean, "2022-01-01 open Assets:Cash USD\n")
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import net_worth
+
+    result = net_worth()
+    assert result["error_type"] == "ledger"
+    _reset_manager()
+
+
+def test_account_balance_exact_and_subtree(with_net_worth_ledger):
+    from beanie_mcp.server import account_balance
+
+    cash = account_balance("Assets:Cash")
+    assert cash["balance"] == "950.00 USD"
+
+    assets = account_balance("Assets")
+    assert assets["balance"] == "1150.00 USD"
+
+
+def test_account_balance_rejects_quote_in_account(with_net_worth_ledger):
+    from beanie_mcp.server import account_balance
+
+    result = account_balance('Assets"; DROP')
+    assert result["error_type"] == "bql"
+
+
+def test_account_balance_rejects_malformed_date(with_net_worth_ledger):
+    from beanie_mcp.server import account_balance
+
+    result = account_balance("Assets:Cash", as_of="06-01-2022")
+    assert result["error_type"] == "bql"
+
+
+# ---------------------------------------------------------------------------
 # find_unmatched_transfers
 # ---------------------------------------------------------------------------
 

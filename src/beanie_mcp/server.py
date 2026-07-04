@@ -1,6 +1,7 @@
 """beanie-mcp — MCP server for querying Beancount v3 ledgers with BQL."""
 
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from decimal import Decimal
@@ -178,6 +179,134 @@ def bean_check() -> dict:
         "ok": False,
         "message": f"Ledger has {len(errors)} error(s).",
         "errors": errors,
+    }
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _operating_currency(conn: beanquery.Connection) -> str | None:
+    currencies = conn.options.get("operating_currency") or []
+    return currencies[0] if currencies else None
+
+
+def _validate_date(as_of: str | None) -> dict | None:
+    if as_of is not None and not _DATE_RE.match(as_of):
+        return {
+            "error": "as_of must be an ISO date (YYYY-MM-DD)",
+            "error_type": "bql",
+        }
+    return None
+
+
+def _converted_sum(
+    conn: beanquery.Connection, where: str, as_of: str | None, currency: str
+) -> str:
+    query = f"SELECT convert(sum(position), '{currency}') WHERE {where}"
+    if as_of:
+        query += f" AND date <= {as_of}"
+    cursor = conn.execute(query)
+    rows = cursor.fetchall()
+    if not rows:
+        return f"0.00 {currency}"
+    inventory = rows[0][0]
+    position = inventory.get_only_position()
+    return str(position)
+
+
+@mcp.tool()
+def net_worth(
+    as_of: Annotated[
+        str | None,
+        Field(
+            description=(
+                "ISO date (YYYY-MM-DD). Balance as of this date; "
+                "omit for the current balance."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Net worth (Assets + Liabilities), converted to the ledger's
+    operating currency. Uses the first configured operating_currency.
+    """
+    date_error = _validate_date(as_of)
+    if date_error:
+        return date_error
+
+    mgr = _require_manager()
+    errors = mgr.connection_errors()
+    if errors:
+        return _ledger_error_response(errors)
+
+    conn = mgr.connection()
+    currency = _operating_currency(conn)
+    if currency is None:
+        return {
+            "error": "Ledger has no operating_currency configured.",
+            "error_type": "ledger",
+        }
+
+    try:
+        value = _converted_sum(conn, "account ~ 'Assets|Liabilities'", as_of, currency)
+    except beanquery.Error as exc:
+        return {"error": str(exc), "error_type": "bql"}
+
+    return {"net_worth": value, "currency": currency, "as_of": as_of}
+
+
+@mcp.tool()
+def account_balance(
+    account: str = Field(
+        description=(
+            "Account name or subtree root, e.g. 'Assets:Bank' matches "
+            "Assets:Bank and every child account beneath it."
+        )
+    ),
+    as_of: Annotated[
+        str | None,
+        Field(
+            description=(
+                "ISO date (YYYY-MM-DD). Balance as of this date; "
+                "omit for the current balance."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Balance of an account (and its subtree), converted to the ledger's
+    operating currency.
+    """
+    if '"' in account:
+        return {
+            "error": "account must not contain a quote character",
+            "error_type": "bql",
+        }
+    date_error = _validate_date(as_of)
+    if date_error:
+        return date_error
+
+    mgr = _require_manager()
+    errors = mgr.connection_errors()
+    if errors:
+        return _ledger_error_response(errors)
+
+    conn = mgr.connection()
+    currency = _operating_currency(conn)
+    if currency is None:
+        return {
+            "error": "Ledger has no operating_currency configured.",
+            "error_type": "ledger",
+        }
+
+    try:
+        value = _converted_sum(conn, f'account ~ "^{account}"', as_of, currency)
+    except beanquery.Error as exc:
+        return {"error": str(exc), "error_type": "bql"}
+
+    return {
+        "account": account,
+        "balance": value,
+        "currency": currency,
+        "as_of": as_of,
     }
 
 

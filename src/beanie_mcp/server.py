@@ -211,6 +211,8 @@ def _converted_sum(
         return f"0.00 {currency}"
     inventory = rows[0][0]
     position = inventory.get_only_position()
+    if position is None:
+        return f"0.00 {currency}"
     return str(position)
 
 

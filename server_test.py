@@ -570,6 +570,34 @@ def test_account_balance_rejects_malformed_date(with_net_worth_ledger):
     assert result["error_type"] == "bql"
 
 
+def test_account_balance_exactly_zero(tmp_path, monkeypatch):
+    """Test that an account with equal and opposite postings (summing to exactly
+    zero) returns "0.00 USD" rather than the literal string "None"."""
+    bean = tmp_path / "zero_balance.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:ZeroAccount USD
+        2022-01-01 open Equity:Opening USD
+        2022-01-02 * "deposit"
+          Assets:ZeroAccount   50.00 USD
+          Equity:Opening      -50.00 USD
+        2022-01-03 * "withdrawal"
+          Assets:ZeroAccount  -50.00 USD
+          Equity:Opening       50.00 USD
+    """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import account_balance
+
+    result = account_balance("Assets:ZeroAccount")
+    assert result["balance"] == "0.00 USD"
+    assert result["currency"] == "USD"
+    _reset_manager()
+
+
 # ---------------------------------------------------------------------------
 # find_unmatched_transfers
 # ---------------------------------------------------------------------------

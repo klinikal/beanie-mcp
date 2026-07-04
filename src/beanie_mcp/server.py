@@ -422,7 +422,10 @@ def list_tables() -> dict:
 
 
 @mcp.tool(
-    description="Latest known price for every commodity with price history in the ledger."
+    description=(
+        "Latest known price for every commodity with price history in the "
+        "ledger."
+    )
 )
 def list_prices() -> dict:
     """Latest price per commodity, from the prices table. Not subject to
@@ -496,7 +499,7 @@ def find_unmatched_transfers(
 
     min_amount_decimal = Decimal(str(min_amount))
     postings = []
-    for date, narration, position in cursor.fetchall():
+    for posting_date, narration, position in cursor.fetchall():
         amount = position.units.number
         posting_currency = position.units.currency
         if currency and posting_currency != currency:
@@ -505,7 +508,7 @@ def find_unmatched_transfers(
             continue
         postings.append(
             {
-                "date": date,
+                "date": posting_date,
                 "narration": narration,
                 "amount": amount,
                 "currency": posting_currency,

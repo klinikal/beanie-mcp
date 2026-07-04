@@ -182,16 +182,12 @@ beanie-mcp is designed for real-world ledgers, not just small demos:
 
 ## Install
 
-> **Not yet on PyPI.** beanie-mcp isn't published to PyPI yet, so `uvx beanie-mcp`
-> below doesn't work today — use [Running from source](#running-from-source-development)
-> instead. The `uvx` form is shown here because it's what installation will
-> look like once the package is published.
-
-Once published, the recommended way to run beanie-mcp will be via `uvx` — no
-clone, no local checkout to keep updated:
+Clone the repo and install the Python dependencies with `uv`:
 
 ```bash
-uvx beanie-mcp
+git clone https://github.com/klinikal/beanie-mcp.git
+cd beanie-mcp
+uv sync
 ```
 
 Find the absolute path to your main Beancount file. For example:
@@ -205,19 +201,10 @@ Use that full path as `BEANCOUNT_LEDGER` in the MCP config below. Relative paths
 You can smoke-test the server before adding it to an MCP client:
 
 ```bash
-BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uvx beanie-mcp
+BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uv run beanie-mcp
 ```
 
 The command starts an MCP stdio server and waits for a client. Press `Ctrl+C` to stop it.
-
-### Running from source (development)
-
-```bash
-git clone https://github.com/klinikal/beanie-mcp.git
-cd beanie-mcp
-uv sync
-BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uv run beanie-mcp
-```
 
 ## Configure an MCP client
 
@@ -227,15 +214,18 @@ The generic command is:
 
 ```json
 {
-  "command": "uvx",
-  "args": ["beanie-mcp"],
+  "command": "uv",
+  "args": [
+    "run",
+    "--directory",
+    "/absolute/path/to/beanie-mcp",
+    "beanie-mcp"
+  ],
   "env": {
     "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
   }
 }
 ```
-
-For running from source instead, see [Running from source](#running-from-source-development).
 
 Some clients wrap that command in an `mcpServers` object. Others have a GUI where you enter the same command, args, and env vars separately.
 
@@ -247,8 +237,13 @@ For clients that use an `mcpServers` JSON block, add:
 {
   "mcpServers": {
     "beanie": {
-      "command": "uvx",
-      "args": ["beanie-mcp"],
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/beanie-mcp",
+        "beanie-mcp"
+      ],
       "env": {
         "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
       }
@@ -257,22 +252,23 @@ For clients that use an `mcpServers` JSON block, add:
 }
 ```
 
-For running from source instead, see [Running from source](#running-from-source-development).
-
 ### Example: Codex
 
 Add a server entry to your Codex config:
 
 ```toml
 [mcp_servers.beanie]
-command = "uvx"
-args = ["beanie-mcp"]
+command = "uv"
+args = [
+  "run",
+  "--directory",
+  "/absolute/path/to/beanie-mcp",
+  "beanie-mcp",
+]
 
 [mcp_servers.beanie.env]
 BEANCOUNT_LEDGER = "/absolute/path/to/your/ledger/main.bean"
 ```
-
-For running from source instead, see [Running from source](#running-from-source-development).
 
 ### Other MCP clients
 
@@ -280,15 +276,18 @@ Use the same command, args, and env vars wherever your client defines local MCP 
 
 ```json
 {
-  "command": "uvx",
-  "args": ["beanie-mcp"],
+  "command": "uv",
+  "args": [
+    "run",
+    "--directory",
+    "/absolute/path/to/beanie-mcp",
+    "beanie-mcp"
+  ],
   "env": {
     "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
   }
 }
 ```
-
-For running from source instead, see [Running from source](#running-from-source-development).
 
 Restart the client after changing MCP config. MCP clients usually read the tool list only when they start.
 

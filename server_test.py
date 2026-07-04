@@ -851,3 +851,40 @@ def test_find_unmatched_transfers_currency_filter(tmp_path, monkeypatch):
     assert result["orphan_count"] == 1
     assert result["orphans"][0]["currency"] == "USD"
     _reset_manager()
+
+
+# ---------------------------------------------------------------------------
+# _inventory_amount edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_amount_zero_position():
+    """Test that an inventory netting to zero returns ("0.00", "0.00")."""
+    from decimal import Decimal
+    from beancount.core import amount, inventory
+    from beanie_mcp.server import _inventory_amount
+
+    inv = inventory.Inventory()
+    inv.add_amount(amount.Amount(Decimal("100.00"), "USD"))
+    inv.add_amount(amount.Amount(Decimal("-100.00"), "USD"))
+
+    display_str, numeric_str = _inventory_amount(inv)
+    assert display_str == "0.00"
+    assert numeric_str == "0.00"
+
+
+def test_inventory_amount_multi_currency():
+    """Test that an inventory with multiple currencies falls back to str(inv)
+    for display and None for numeric value."""
+    from decimal import Decimal
+    from beancount.core import amount, inventory
+    from beanie_mcp.server import _inventory_amount
+
+    inv = inventory.Inventory()
+    inv.add_amount(amount.Amount(Decimal("100.00"), "USD"))
+    inv.add_amount(amount.Amount(Decimal("10.00"), "AAPL"))
+
+    display_str, numeric_str = _inventory_amount(inv)
+    assert "100.00 USD" in display_str
+    assert "10.00 AAPL" in display_str
+    assert numeric_str is None

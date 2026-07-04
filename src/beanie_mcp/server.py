@@ -1,7 +1,8 @@
 """beanie-mcp — MCP server for querying Beancount v3 ledgers with BQL."""
 
+import json
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
@@ -55,6 +56,42 @@ def _ledger_error_response(errors: list[dict[str, object]]) -> dict:
         "error": "Ledger has bean-check errors; fix them before querying.",
         "error_type": "ledger",
         "errors": errors,
+    }
+
+
+def _date_range(conn: beanquery.Connection) -> dict[str, str | None]:
+    """Min/max posting date. Only sees dates with at least one posting —
+    bare open/close/price directives with no postings are invisible here."""
+    cursor = conn.execute("SELECT min(date), max(date)")
+    rows = cursor.fetchall()
+    if not rows or rows[0][0] is None:
+        return {"first": None, "last": None}
+    first, last = rows[0]
+    return {"first": first.isoformat(), "last": last.isoformat()}
+
+
+@mcp.tool()
+def ledger_info() -> dict:
+    """Orientation facts for querying: base currency, date span, account
+    roots, and today's date. Call this before writing BQL to avoid
+    guessing the operating currency or today's date.
+    """
+    mgr = _require_manager()
+    errors = mgr.connection_errors()
+    if errors:
+        return _ledger_error_response(errors)
+
+    conn = mgr.connection()
+    accounts = _account_names()
+    roots = sorted({a.split(":")[0] for a in accounts})
+
+    return {
+        "today": date.today().isoformat(),
+        "title": conn.options.get("title"),
+        "operating_currency": conn.options.get("operating_currency") or [],
+        "date_range": _date_range(conn),
+        "account_count": len(accounts),
+        "account_roots": roots,
     }
 
 
@@ -315,6 +352,19 @@ def get_accounts() -> str:
 def get_tables() -> str:
     """BQL-accessible tables (accounts, balances, entries, postings, prices, etc.)."""
     return "\n".join(_table_names())
+
+
+@mcp.resource(
+    "beanie://context",
+    description=(
+        "Orientation facts for querying: base currency, date span, account "
+        "roots, today's date. Read this before writing BQL."
+    ),
+    mime_type="application/json",
+)
+def get_context() -> str:
+    """JSON-encoded ledger_info() — see that tool for field meanings."""
+    return json.dumps(ledger_info())
 
 
 @mcp.resource(

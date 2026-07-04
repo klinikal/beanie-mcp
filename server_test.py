@@ -365,6 +365,84 @@ def test_get_tables_returns_expected_tables(with_ledger):
         assert expected in tables
 
 
+@pytest.fixture()
+def bean_file_with_options(tmp_path):
+    bean = tmp_path / "ledger.bean"
+    _write_bean(
+        bean,
+        """
+        option "title" "Test Ledger"
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Expenses:Food USD
+        2022-03-15 * "Lunch"
+          Assets:Cash    -10.00 USD
+          Expenses:Food   10.00 USD
+        2022-06-20 * "Dinner"
+          Assets:Cash    -20.00 USD
+          Expenses:Food   20.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_options_ledger(bean_file_with_options, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_with_options))
+    _reset_manager()
+    yield bean_file_with_options
+    _reset_manager()
+
+
+def test_ledger_info_returns_expected_shape(with_options_ledger):
+    from beanie_mcp.server import ledger_info
+
+    result = ledger_info()
+    assert set(result.keys()) == {
+        "today",
+        "title",
+        "operating_currency",
+        "date_range",
+        "account_count",
+        "account_roots",
+    }
+    assert result["title"] == "Test Ledger"
+    assert result["operating_currency"] == ["USD"]
+    assert result["account_roots"] == ["Assets", "Expenses"]
+    assert result["date_range"] == {"first": "2022-03-15", "last": "2022-06-20"}
+    assert result["account_count"] == 2
+
+
+def test_ledger_info_no_ledger_raises(no_ledger):
+    from beanie_mcp.server import ledger_info
+
+    with pytest.raises(RuntimeError, match="BEANCOUNT_LEDGER"):
+        ledger_info()
+
+
+def test_ledger_info_broken_ledger_returns_error(tmp_path, monkeypatch):
+    bean = tmp_path / "broken.bean"
+    content = "2022-01-01 open Assets:Cash USD\n"
+    content += "2022-01-02 balance Assets:Cash 999.00 USD\n"
+    bean.write_text(content)
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import ledger_info
+
+    result = ledger_info()
+    assert result["error_type"] == "ledger"
+    _reset_manager()
+
+
+def test_get_context_resource_returns_valid_json(with_options_ledger):
+    import json
+
+    from beanie_mcp.server import get_context
+
+    payload = json.loads(get_context())
+    assert payload["title"] == "Test Ledger"
+
+
 def test_list_accounts_returns_structured_result(tmp_path, monkeypatch):
     bean = tmp_path / "accounts.bean"
     _write_bean(

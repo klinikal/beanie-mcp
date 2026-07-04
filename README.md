@@ -13,7 +13,7 @@ Once connected, your agent can query your ledger directly without you touching a
 > *"Are there any errors or failed balance assertions in my ledger?"*
 > *"Show me all transactions in my brokerage account this tax year."*
 
-beanie-mcp exposes five tools and three resources:
+beanie-mcp exposes six tools and four resources:
 
 | Name | Type | Description |
 |---|---|---|
@@ -22,9 +22,11 @@ beanie-mcp exposes five tools and three resources:
 | `list_accounts` | Tool | Return all declared accounts as structured JSON, without the query row cap. |
 | `list_tables` | Tool | Return beanquery table names plus the key `FROM` caveat. |
 | `find_unmatched_transfers` | Tool | Greedy-match postings to a staging/suspense account (opposite sign, equal amount, date within a window) and report unmatched orphans. |
+| `ledger_info` | Tool | Orientation facts before querying: operating currency, title, date span, account count/roots, today's date. |
 | `beanie://accounts` | Resource | All accounts in the ledger, one per line. |
 | `beanie://tables` | Resource | BQL-accessible table names. |
 | `beanie://bql-guide` | Resource | Short BQL guide for agents, including caveats and examples. |
+| `beanie://context` | Resource | JSON-encoded `ledger_info()` output. |
 
 ## BQL notes
 

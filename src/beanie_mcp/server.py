@@ -13,7 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .ledger import LedgerManager
+from .ledger import LedgerManager, _format_loader_error
 
 ROW_LIMIT = 200
 
@@ -60,6 +60,15 @@ def _ledger_error_response(errors: list[dict[str, object]]) -> dict:
     }
 
 
+def _connect(mgr: LedgerManager) -> tuple[beanquery.Connection, list[dict]]:
+    """Fetch the cached connection once and derive its errors from it —
+    avoids the double staleness check of calling connection_errors() and
+    connection() separately."""
+    conn = mgr.connection()
+    errors = [_format_loader_error(err) for err in getattr(conn, "errors", [])]
+    return conn, errors
+
+
 def _date_range(conn: beanquery.Connection) -> dict[str, str | None]:
     """Min/max posting date. Only sees dates with at least one posting —
     bare open/close/price directives with no postings are invisible here."""
@@ -78,11 +87,10 @@ def ledger_info() -> dict:
     guessing the operating currency or today's date.
     """
     mgr = _require_manager()
-    errors = mgr.connection_errors()
+    conn, errors = _connect(mgr)
     if errors:
         return _ledger_error_response(errors)
 
-    conn = mgr.connection()
     accounts = _account_names()
     roots = sorted({a.split(":")[0] for a in accounts})
 
@@ -98,8 +106,7 @@ def ledger_info() -> dict:
 
 def _run_bql(query: str, offset: int = 0) -> dict:
     mgr = _require_manager()
-    conn = mgr.connection()
-    errors = mgr.connection_errors()
+    conn, errors = _connect(mgr)
     if errors:
         return _ledger_error_response(errors)
 
@@ -192,12 +199,37 @@ def _operating_currency(conn: beanquery.Connection) -> str | None:
 
 
 def _validate_date(as_of: str | None) -> dict | None:
-    if as_of is not None and not _DATE_RE.match(as_of):
+    if as_of is None:
+        return None
+    if not _DATE_RE.match(as_of):
+        return {
+            "error": "as_of must be an ISO date (YYYY-MM-DD)",
+            "error_type": "bql",
+        }
+    try:
+        date.fromisoformat(as_of)
+    except ValueError:
         return {
             "error": "as_of must be an ISO date (YYYY-MM-DD)",
             "error_type": "bql",
         }
     return None
+
+
+# Sentinel distinguishing "inventory holds >1 currency" (get_only_position
+# raised) from "inventory is genuinely empty" (get_only_position returned
+# None) — both _converted_sum and _inventory_amount need to tell these apart.
+_AMBIGUOUS = object()
+
+
+def _safe_position(inv):
+    """Extract a single position from an Inventory. Returns None if the
+    inventory is empty/zero, or _AMBIGUOUS if it holds more than one
+    currency (conversion incomplete, usually a missing price)."""
+    try:
+        return inv.get_only_position()
+    except (ValueError, AssertionError):
+        return _AMBIGUOUS
 
 
 def _converted_sum(
@@ -211,9 +243,8 @@ def _converted_sum(
     if not rows:
         return f"0.00 {currency}"
     inventory = rows[0][0]
-    try:
-        position = inventory.get_only_position()
-    except (ValueError, AssertionError):
+    position = _safe_position(inventory)
+    if position is _AMBIGUOUS:
         return str(inventory)
     if position is None:
         return f"0.00 {currency}"
@@ -240,11 +271,10 @@ def net_worth(
         return date_error
 
     mgr = _require_manager()
-    errors = mgr.connection_errors()
+    conn, errors = _connect(mgr)
     if errors:
         return _ledger_error_response(errors)
 
-    conn = mgr.connection()
     currency = _operating_currency(conn)
     if currency is None:
         return {
@@ -253,7 +283,9 @@ def net_worth(
         }
 
     try:
-        value = _converted_sum(conn, "account ~ 'Assets|Liabilities'", as_of, currency)
+        value = _converted_sum(
+            conn, "account ~ '^(Assets|Liabilities)(:|$)'", as_of, currency
+        )
     except beanquery.Error as exc:
         return {"error": str(exc), "error_type": "bql"}
 
@@ -291,11 +323,10 @@ def account_balance(
         return date_error
 
     mgr = _require_manager()
-    errors = mgr.connection_errors()
+    conn, errors = _connect(mgr)
     if errors:
         return _ledger_error_response(errors)
 
-    conn = mgr.connection()
     currency = _operating_currency(conn)
     if currency is None:
         return {
@@ -304,7 +335,7 @@ def account_balance(
         }
 
     try:
-        value = _converted_sum(conn, f'account ~ "^{account}"', as_of, currency)
+        value = _converted_sum(conn, f'account ~ "^{account}(:|$)"', as_of, currency)
     except beanquery.Error as exc:
         return {"error": str(exc), "error_type": "bql"}
 
@@ -320,13 +351,12 @@ def _inventory_amount(inv) -> tuple[str, str | None]:
     """Return (display_string, numeric_string). numeric_string is None if
     the inventory holds more than one currency (conversion incomplete,
     usually a missing price) — display_string falls back to str(inv)."""
-    try:
-        pos = inv.get_only_position()
-    except (ValueError, AssertionError):
+    position = _safe_position(inv)
+    if position is _AMBIGUOUS:
         return str(inv), None
-    if pos is None:
+    if position is None:
         return "0.00", "0.00"
-    return str(pos.units), str(pos.units.number)
+    return str(position.units), str(position.units.number)
 
 
 @mcp.tool(
@@ -339,11 +369,10 @@ def holdings() -> dict:
     """Fava-style holdings report. Excludes the operating currency itself
     (cash isn't a 'holding')."""
     mgr = _require_manager()
-    errors = mgr.connection_errors()
+    conn, errors = _connect(mgr)
     if errors:
         return _ledger_error_response(errors)
 
-    conn = mgr.connection()
     currency = _operating_currency(conn)
     if currency is None:
         return {
@@ -355,7 +384,7 @@ def holdings() -> dict:
         "SELECT currency, sum(units(position)) as units, "
         f"convert(sum(cost(position)), '{currency}') as cost_basis, "
         f"convert(sum(value(position)), '{currency}') as market_value "
-        f"WHERE account ~ 'Assets' AND currency != '{currency}' "
+        f"WHERE account ~ '^Assets(:|$)' AND currency != '{currency}' "
         "GROUP BY currency ORDER BY currency"
     )
     try:
@@ -484,11 +513,10 @@ def find_unmatched_transfers(
         }
 
     mgr = _require_manager()
-    errors = mgr.connection_errors()
+    conn, errors = _connect(mgr)
     if errors:
         return _ledger_error_response(errors)
 
-    conn = mgr.connection()
     try:
         cursor = conn.execute(
             f'SELECT date, narration, position '

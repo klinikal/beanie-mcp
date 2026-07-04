@@ -612,6 +612,43 @@ def test_net_worth_rejects_malformed_date(with_net_worth_ledger):
     assert result["error_type"] == "bql"
 
 
+def test_net_worth_rejects_calendar_invalid_date(with_net_worth_ledger):
+    """Shape-valid but calendar-invalid dates (e.g. month 13) must be
+    rejected before reaching BQL, not raise ValueError."""
+    from beanie_mcp.server import net_worth
+
+    result = net_worth(as_of="2022-13-45")
+    assert result["error_type"] == "bql"
+
+
+def test_net_worth_ignores_sibling_account_substring(tmp_path, monkeypatch):
+    """An account like Expenses:AssetsWriteoff must not be folded into net
+    worth just because 'Assets' is a substring of its name."""
+    bean = tmp_path / "sibling.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Expenses:AssetsWriteoff USD
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 * "fund"
+          Assets:Cash    100.00 USD
+          Equity:Opening -100.00 USD
+        2022-01-02 * "writeoff"
+          Expenses:AssetsWriteoff  500.00 USD
+          Equity:Opening          -500.00 USD
+    """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import net_worth
+
+    result = net_worth()
+    assert result["net_worth"] == "100.00 USD"
+    _reset_manager()
+
+
 def test_net_worth_no_operating_currency(tmp_path, monkeypatch):
     bean = tmp_path / "no_ccy.bean"
     _write_bean(bean, "2022-01-01 open Assets:Cash USD\n")
@@ -646,6 +683,42 @@ def test_account_balance_rejects_malformed_date(with_net_worth_ledger):
 
     result = account_balance("Assets:Cash", as_of="06-01-2022")
     assert result["error_type"] == "bql"
+
+
+def test_account_balance_rejects_calendar_invalid_date(with_net_worth_ledger):
+    """Shape-valid but calendar-invalid dates (e.g. month 13) must be
+    rejected before reaching BQL, not raise ValueError."""
+    from beanie_mcp.server import account_balance
+
+    result = account_balance("Assets:Cash", as_of="2022-13-45")
+    assert result["error_type"] == "bql"
+
+
+def test_account_balance_isolates_sibling_subtree(tmp_path, monkeypatch):
+    """Assets:Chase must not substring-match its sibling Assets:ChaseSaving."""
+    bean = tmp_path / "siblings.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Chase USD
+        2022-01-01 open Assets:ChaseSaving USD
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 * "fund chase"
+          Assets:Chase    10.00 USD
+          Equity:Opening -10.00 USD
+        2022-01-01 * "fund chase saving"
+          Assets:ChaseSaving  500.00 USD
+          Equity:Opening     -500.00 USD
+    """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import account_balance
+
+    result = account_balance("Assets:Chase")
+    assert result["balance"] == "10.00 USD"
+    _reset_manager()
 
 
 def test_account_balance_exactly_zero(tmp_path, monkeypatch):
@@ -732,6 +805,42 @@ def test_holdings_no_holdings_returns_empty(with_ledger):
     result = holdings()
     assert result["holdings"] == []
     assert result["count"] == 0
+
+
+def test_holdings_ignores_non_asset_account_substring(tmp_path, monkeypatch):
+    """An Expenses:AssetsWriteoff account holding a foreign currency must
+    not appear in holdings just because 'Assets' is a substring of it."""
+    bean = tmp_path / "sibling_holdings.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Assets:Broker:AAPL AAPL
+        2022-01-01 open Expenses:AssetsWriteoff EUR
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 open Equity:Opening2 EUR
+        2022-01-01 price AAPL 150.00 USD
+        2022-01-01 * "fund"
+          Assets:Cash    5000.00 USD
+          Equity:Opening -5000.00 USD
+        2022-01-01 * "buy"
+          Assets:Broker:AAPL 10 AAPL {150.00 USD}
+          Assets:Cash    -1500.00 USD
+        2022-01-02 * "writeoff"
+          Expenses:AssetsWriteoff  200.00 EUR
+          Equity:Opening2         -200.00 EUR
+    """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import holdings
+
+    result = holdings()
+    commodities = {row["commodity"] for row in result["holdings"]}
+    assert commodities == {"AAPL"}
+    assert "EUR" not in commodities
+    _reset_manager()
 
 
 def test_holdings_no_operating_currency(tmp_path, monkeypatch):

@@ -14,8 +14,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the operating currency, with an optional `as_of` date.
 - `list_prices` tool and `beanie://prices` resource — latest known price
   per commodity.
-- `holdings` tool — per-commodity units, cost basis, market value, and
-  unrealised gain, converted to the operating currency.
 
 ### Changed
 - `bean_check` now reuses the cached ledger connection instead of

@@ -3,6 +3,12 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- Install docs reverted to `git clone` + `uv run` — not publishing to PyPI
+  for now, GitHub is the only distribution channel.
+
 ## [0.2.0]
 
 ### Added
@@ -22,6 +28,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-parsing the ledger from disk on every call.
 - `beanie://bql-guide` documents `convert()`/`cost()`/`value()` for
   multi-currency and lot-tracked ledgers.
+
+### Fixed
+- `net_worth`, `account_balance`, and `holdings` used unanchored account
+  regexes that could silently fold unrelated accounts (e.g.
+  `Expenses:AssetsWriteoff`, or a sibling like `Assets:ChaseSaving`) into
+  results meant for a different account or subtree. All three now match
+  on account-path boundaries only.
+- `as_of` date params now reject calendar-invalid dates (e.g.
+  `2022-13-45`) before querying, instead of raising an unhandled error.
 
 ## [0.1.0]
 

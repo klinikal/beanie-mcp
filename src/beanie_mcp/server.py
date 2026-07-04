@@ -377,6 +377,12 @@ def get_bql_guide() -> str:
 
 BQL looks SQL-like, but it is not general SQL.
 
+## Get oriented first
+
+Call `ledger_info` (or read `beanie://context`) before writing a query —
+it tells you the ledger's operating currency and today's date, so you
+never have to guess either.
+
 ## Important caveat
 
 `FROM` is a date/filter clause, not a table selector. Do not assume
@@ -391,6 +397,34 @@ posting's stored sign correctly, but `sum(position)` aggregates over many
 postings can read as inverted from what you'd naively expect. If an
 aggregate sign looks surprising, cross-check with a row-level (non-
 aggregated) query on the same account before reporting a number downstream.
+
+## Multi-currency ledgers: always convert
+
+A ledger with multiple currencies (or any stock/crypto holdings) will
+return a mixed-currency `Inventory` from `sum(position)` — not a single
+number. Wrap it in `convert(..., '<CCY>')` to force one currency, using
+the operating currency from `ledger_info`:
+
+```sql
+SELECT convert(sum(position), 'USD')
+WHERE account ~ "Assets|Liabilities"
+```
+
+For lot-tracked holdings (stocks, crypto), `cost(position)` gives the
+booked cost basis and `value(position)` gives the current market value —
+both also need `convert()` if the lot's currency differs from your
+operating currency:
+
+```sql
+SELECT currency, convert(sum(cost(position)), 'USD'),
+       convert(sum(value(position)), 'USD')
+WHERE account ~ "Assets:Broker"
+GROUP BY currency
+```
+
+For net worth or account balances, prefer the dedicated `net_worth` and
+`account_balance` tools — they handle the operating-currency lookup and
+conversion for you.
 
 ## Useful examples
 

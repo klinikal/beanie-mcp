@@ -365,6 +365,14 @@ def test_get_tables_returns_expected_tables(with_ledger):
         assert expected in tables
 
 
+def test_bql_guide_documents_conversion():
+    from beanie_mcp.server import get_bql_guide
+
+    guide = get_bql_guide()
+    assert "convert(" in guide
+    assert "ledger_info" in guide
+
+
 @pytest.fixture()
 def bean_file_with_options(tmp_path):
     bean = tmp_path / "ledger.bean"

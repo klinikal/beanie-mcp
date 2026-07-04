@@ -13,7 +13,7 @@ Once connected, your agent can query your ledger directly without you touching a
 > *"Are there any errors or failed balance assertions in my ledger?"*
 > *"Show me all transactions in my brokerage account this tax year."*
 
-beanie-mcp exposes nine tools and five resources:
+beanie-mcp exposes ten tools and five resources:
 
 | Name | Type | Description |
 |---|---|---|
@@ -26,6 +26,7 @@ beanie-mcp exposes nine tools and five resources:
 | `ledger_info` | Tool | Orientation facts before querying: operating currency, title, date span, account count/roots, today's date. |
 | `net_worth` | Tool | Net worth (Assets + Liabilities) converted to the operating currency. Optional `as_of` date. |
 | `account_balance` | Tool | Balance of an account (and its subtree) converted to the operating currency. Optional `as_of` date. |
+| `holdings` | Tool | Per-commodity units, cost basis, market value, and unrealised gain, converted to the operating currency. |
 | `beanie://accounts` | Resource | All accounts in the ledger, one per line. |
 | `beanie://tables` | Resource | BQL-accessible table names. |
 | `beanie://prices` | Resource | JSON-encoded `list_prices()` output. |

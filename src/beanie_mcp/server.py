@@ -313,6 +313,76 @@ def account_balance(
     }
 
 
+def _inventory_amount(inv) -> tuple[str, str | None]:
+    """Return (display_string, numeric_string). numeric_string is None if
+    the inventory holds more than one currency (conversion incomplete,
+    usually a missing price) — display_string falls back to str(inv)."""
+    try:
+        pos = inv.get_only_position()
+    except (ValueError, AssertionError):
+        return str(inv), None
+    if pos is None:
+        return "0.00", "0.00"
+    return str(pos.units), str(pos.units.number)
+
+
+@mcp.tool(
+    description=(
+        "Per-commodity holdings: units, cost basis, market value, and "
+        "unrealised gain, converted to the operating currency."
+    )
+)
+def holdings() -> dict:
+    """Fava-style holdings report. Excludes the operating currency itself
+    (cash isn't a 'holding')."""
+    mgr = _require_manager()
+    errors = mgr.connection_errors()
+    if errors:
+        return _ledger_error_response(errors)
+
+    conn = mgr.connection()
+    currency = _operating_currency(conn)
+    if currency is None:
+        return {
+            "error": "Ledger has no operating_currency configured.",
+            "error_type": "ledger",
+        }
+
+    query = (
+        "SELECT currency, sum(units(position)) as units, "
+        f"convert(sum(cost(position)), '{currency}') as cost_basis, "
+        f"convert(sum(value(position)), '{currency}') as market_value "
+        f"WHERE account ~ 'Assets' AND currency != '{currency}' "
+        "GROUP BY currency ORDER BY currency"
+    )
+    try:
+        cursor = conn.execute(query)
+    except beanquery.Error as exc:
+        return {"error": str(exc), "error_type": "bql"}
+
+    rows = []
+    for commodity, units, cost_inv, value_inv in cursor.fetchall():
+        units_str, _ = _inventory_amount(units)
+        cost_str, cost_num = _inventory_amount(cost_inv)
+        value_str, value_num = _inventory_amount(value_inv)
+        gain = (
+            str(Decimal(value_num) - Decimal(cost_num))
+            if cost_num is not None and value_num is not None
+            else None
+        )
+        rows.append(
+            {
+                "commodity": commodity,
+                "units": units_str,
+                "cost_basis": cost_str,
+                "market_value": value_str,
+                "gain": gain,
+            }
+        )
+
+    return {"holdings": rows, "currency": currency, "count": len(rows)}
+
+
 def _account_names() -> list[str]:
     conn = _require_manager().connection()
     return sorted(str(row[0]) for row in conn.tables["accounts"])

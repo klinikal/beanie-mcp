@@ -147,6 +147,7 @@ def bean_file(tmp_path):
     _write_bean(
         bean,
         """
+        option "operating_currency" "USD"
         2022-01-01 open Assets:Cash USD
         2022-01-01 open Expenses:Food USD
         2022-01-02 * "Lunch"
@@ -672,6 +673,76 @@ def test_account_balance_exactly_zero(tmp_path, monkeypatch):
     result = account_balance("Assets:ZeroAccount")
     assert result["balance"] == "0.00 USD"
     assert result["currency"] == "USD"
+    _reset_manager()
+
+
+# ---------------------------------------------------------------------------
+# holdings
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def bean_file_holdings(tmp_path):
+    bean = tmp_path / "holdings.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Assets:Broker:AAPL AAPL
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 price AAPL 150.00 USD
+        2022-06-01 price AAPL 175.00 USD
+        2022-01-01 * "fund"
+          Assets:Cash    5000.00 USD
+          Equity:Opening -5000.00 USD
+        2022-01-01 * "buy"
+          Assets:Broker:AAPL 10 AAPL {150.00 USD}
+          Assets:Cash    -1500.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_holdings_ledger(bean_file_holdings, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_holdings))
+    _reset_manager()
+    yield bean_file_holdings
+    _reset_manager()
+
+
+def test_holdings_reports_units_cost_value_gain(with_holdings_ledger):
+    from beanie_mcp.server import holdings
+
+    result = holdings()
+    assert result["currency"] == "USD"
+    assert result["count"] == 1
+    row = result["holdings"][0]
+    assert row["commodity"] == "AAPL"
+    assert row["units"] == "10 AAPL"
+    assert row["cost_basis"] == "1500.00 USD"
+    assert row["market_value"] == "1750.00 USD"
+    assert row["gain"] == "250.00"
+
+
+def test_holdings_no_holdings_returns_empty(with_ledger):
+    from beanie_mcp.server import holdings
+
+    result = holdings()
+    assert result["holdings"] == []
+    assert result["count"] == 0
+
+
+def test_holdings_no_operating_currency(tmp_path, monkeypatch):
+    bean = tmp_path / "no_ccy.bean"
+    _write_bean(bean, "2022-01-01 open Assets:Cash USD\n")
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import holdings
+
+    result = holdings()
+    assert result["error_type"] == "ledger"
     _reset_manager()
 
 

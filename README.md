@@ -13,7 +13,7 @@ Once connected, your agent can query your ledger directly without you touching a
 > *"Are there any errors or failed balance assertions in my ledger?"*
 > *"Show me all transactions in my brokerage account this tax year."*
 
-beanie-mcp exposes five tools and three resources:
+beanie-mcp exposes ten tools and five resources:
 
 | Name | Type | Description |
 |---|---|---|
@@ -21,10 +21,17 @@ beanie-mcp exposes five tools and three resources:
 | `bean_check` | Tool | Run bean-check on the ledger. Returns structured `{ ok, message, errors }` JSON. |
 | `list_accounts` | Tool | Return all declared accounts as structured JSON, without the query row cap. |
 | `list_tables` | Tool | Return beanquery table names plus the key `FROM` caveat. |
+| `list_prices` | Tool | Latest known price for every commodity with price history, without the 200-row cap. |
 | `find_unmatched_transfers` | Tool | Greedy-match postings to a staging/suspense account (opposite sign, equal amount, date within a window) and report unmatched orphans. |
+| `ledger_info` | Tool | Orientation facts before querying: operating currency, title, date span, account count/roots, today's date. |
+| `net_worth` | Tool | Net worth (Assets + Liabilities) converted to the operating currency. Optional `as_of` date. |
+| `account_balance` | Tool | Balance of an account (and its subtree) converted to the operating currency. Optional `as_of` date. |
+| `holdings` | Tool | Per-commodity units, cost basis, market value, and unrealised gain, converted to the operating currency. |
 | `beanie://accounts` | Resource | All accounts in the ledger, one per line. |
 | `beanie://tables` | Resource | BQL-accessible table names. |
+| `beanie://prices` | Resource | JSON-encoded `list_prices()` output. |
 | `beanie://bql-guide` | Resource | Short BQL guide for agents, including caveats and examples. |
+| `beanie://context` | Resource | JSON-encoded `ledger_info()` output. |
 
 ## BQL notes
 
@@ -175,12 +182,16 @@ beanie-mcp is designed for real-world ledgers, not just small demos:
 
 ## Install
 
-Clone the repo and install the Python dependencies with `uv`:
+> **Not yet on PyPI.** beanie-mcp isn't published to PyPI yet, so `uvx beanie-mcp`
+> below doesn't work today — use [Running from source](#running-from-source-development)
+> instead. The `uvx` form is shown here because it's what installation will
+> look like once the package is published.
+
+Once published, the recommended way to run beanie-mcp will be via `uvx` — no
+clone, no local checkout to keep updated:
 
 ```bash
-git clone https://github.com/klinikal/beanie-mcp.git
-cd beanie-mcp
-uv sync
+uvx beanie-mcp
 ```
 
 Find the absolute path to your main Beancount file. For example:
@@ -194,10 +205,19 @@ Use that full path as `BEANCOUNT_LEDGER` in the MCP config below. Relative paths
 You can smoke-test the server before adding it to an MCP client:
 
 ```bash
-BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uv run beanie-mcp
+BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uvx beanie-mcp
 ```
 
 The command starts an MCP stdio server and waits for a client. Press `Ctrl+C` to stop it.
+
+### Running from source (development)
+
+```bash
+git clone https://github.com/klinikal/beanie-mcp.git
+cd beanie-mcp
+uv sync
+BEANCOUNT_LEDGER=/absolute/path/to/your/ledger/main.bean uv run beanie-mcp
+```
 
 ## Configure an MCP client
 
@@ -207,18 +227,15 @@ The generic command is:
 
 ```json
 {
-  "command": "uv",
-  "args": [
-    "run",
-    "--directory",
-    "/absolute/path/to/beanie-mcp",
-    "beanie-mcp"
-  ],
+  "command": "uvx",
+  "args": ["beanie-mcp"],
   "env": {
     "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
   }
 }
 ```
+
+For running from source instead, see [Running from source](#running-from-source-development).
 
 Some clients wrap that command in an `mcpServers` object. Others have a GUI where you enter the same command, args, and env vars separately.
 
@@ -230,13 +247,8 @@ For clients that use an `mcpServers` JSON block, add:
 {
   "mcpServers": {
     "beanie": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "/absolute/path/to/beanie-mcp",
-        "beanie-mcp"
-      ],
+      "command": "uvx",
+      "args": ["beanie-mcp"],
       "env": {
         "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
       }
@@ -245,23 +257,22 @@ For clients that use an `mcpServers` JSON block, add:
 }
 ```
 
+For running from source instead, see [Running from source](#running-from-source-development).
+
 ### Example: Codex
 
 Add a server entry to your Codex config:
 
 ```toml
 [mcp_servers.beanie]
-command = "uv"
-args = [
-  "run",
-  "--directory",
-  "/absolute/path/to/beanie-mcp",
-  "beanie-mcp",
-]
+command = "uvx"
+args = ["beanie-mcp"]
 
 [mcp_servers.beanie.env]
 BEANCOUNT_LEDGER = "/absolute/path/to/your/ledger/main.bean"
 ```
+
+For running from source instead, see [Running from source](#running-from-source-development).
 
 ### Other MCP clients
 
@@ -269,18 +280,15 @@ Use the same command, args, and env vars wherever your client defines local MCP 
 
 ```json
 {
-  "command": "uv",
-  "args": [
-    "run",
-    "--directory",
-    "/absolute/path/to/beanie-mcp",
-    "beanie-mcp"
-  ],
+  "command": "uvx",
+  "args": ["beanie-mcp"],
   "env": {
     "BEANCOUNT_LEDGER": "/absolute/path/to/your/ledger/main.bean"
   }
 }
 ```
+
+For running from source instead, see [Running from source](#running-from-source-development).
 
 Restart the client after changing MCP config. MCP clients usually read the tool list only when they start.
 

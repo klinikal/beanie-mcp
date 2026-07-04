@@ -1,7 +1,9 @@
 """beanie-mcp — MCP server for querying Beancount v3 ledgers with BQL."""
 
+import json
+import re
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
@@ -11,7 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .ledger import LedgerManager
+from .ledger import LedgerManager, _format_loader_error
 
 ROW_LIMIT = 200
 
@@ -58,10 +60,53 @@ def _ledger_error_response(errors: list[dict[str, object]]) -> dict:
     }
 
 
+def _connect(mgr: LedgerManager) -> tuple[beanquery.Connection, list[dict]]:
+    """Fetch the cached connection once and derive its errors from it —
+    avoids the double staleness check of calling connection_errors() and
+    connection() separately."""
+    conn = mgr.connection()
+    errors = [_format_loader_error(err) for err in getattr(conn, "errors", [])]
+    return conn, errors
+
+
+def _date_range(conn: beanquery.Connection) -> dict[str, str | None]:
+    """Min/max posting date. Only sees dates with at least one posting —
+    bare open/close/price directives with no postings are invisible here."""
+    cursor = conn.execute("SELECT min(date), max(date)")
+    rows = cursor.fetchall()
+    if not rows or rows[0][0] is None:
+        return {"first": None, "last": None}
+    first, last = rows[0]
+    return {"first": first.isoformat(), "last": last.isoformat()}
+
+
+@mcp.tool()
+def ledger_info() -> dict:
+    """Orientation facts for querying: base currency, date span, account
+    roots, and today's date. Call this before writing BQL to avoid
+    guessing the operating currency or today's date.
+    """
+    mgr = _require_manager()
+    conn, errors = _connect(mgr)
+    if errors:
+        return _ledger_error_response(errors)
+
+    accounts = _account_names()
+    roots = sorted({a.split(":")[0] for a in accounts})
+
+    return {
+        "today": date.today().isoformat(),
+        "title": conn.options.get("title"),
+        "operating_currency": conn.options.get("operating_currency") or [],
+        "date_range": _date_range(conn),
+        "account_count": len(accounts),
+        "account_roots": roots,
+    }
+
+
 def _run_bql(query: str, offset: int = 0) -> dict:
     mgr = _require_manager()
-    conn = mgr.connection()
-    errors = mgr.connection_errors()
+    conn, errors = _connect(mgr)
     if errors:
         return _ledger_error_response(errors)
 
@@ -128,9 +173,10 @@ def run_query(
 def bean_check() -> dict:
     """Validate the ledger with bean-check.
 
-    Returns structured status and loader/balance errors.
+    Returns structured status and loader/balance errors. Reuses the
+    cached ledger connection instead of re-parsing the ledger from disk.
     """
-    errors = _require_manager().check()
+    errors = _require_manager().connection_errors()
     if not errors:
         return {
             "ok": True,
@@ -142,6 +188,231 @@ def bean_check() -> dict:
         "message": f"Ledger has {len(errors)} error(s).",
         "errors": errors,
     }
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _operating_currency(conn: beanquery.Connection) -> str | None:
+    currencies = conn.options.get("operating_currency") or []
+    return currencies[0] if currencies else None
+
+
+def _validate_date(as_of: str | None) -> dict | None:
+    if as_of is None:
+        return None
+    if not _DATE_RE.match(as_of):
+        return {
+            "error": "as_of must be an ISO date (YYYY-MM-DD)",
+            "error_type": "bql",
+        }
+    try:
+        date.fromisoformat(as_of)
+    except ValueError:
+        return {
+            "error": "as_of must be an ISO date (YYYY-MM-DD)",
+            "error_type": "bql",
+        }
+    return None
+
+
+# Sentinel distinguishing "inventory holds >1 currency" (get_only_position
+# raised) from "inventory is genuinely empty" (get_only_position returned
+# None) — both _converted_sum and _inventory_amount need to tell these apart.
+_AMBIGUOUS = object()
+
+
+def _safe_position(inv):
+    """Extract a single position from an Inventory. Returns None if the
+    inventory is empty/zero, or _AMBIGUOUS if it holds more than one
+    currency (conversion incomplete, usually a missing price)."""
+    try:
+        return inv.get_only_position()
+    except (ValueError, AssertionError):
+        return _AMBIGUOUS
+
+
+def _converted_sum(
+    conn: beanquery.Connection, where: str, as_of: str | None, currency: str
+) -> str:
+    query = f"SELECT convert(sum(position), '{currency}') WHERE {where}"
+    if as_of:
+        query += f" AND date <= {as_of}"
+    cursor = conn.execute(query)
+    rows = cursor.fetchall()
+    if not rows:
+        return f"0.00 {currency}"
+    inventory = rows[0][0]
+    position = _safe_position(inventory)
+    if position is _AMBIGUOUS:
+        return str(inventory)
+    if position is None:
+        return f"0.00 {currency}"
+    return str(position)
+
+
+@mcp.tool()
+def net_worth(
+    as_of: Annotated[
+        str | None,
+        Field(
+            description=(
+                "ISO date (YYYY-MM-DD). Balance as of this date; "
+                "omit for the current balance."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Net worth (Assets + Liabilities), converted to the ledger's
+    operating currency. Uses the first configured operating_currency.
+    """
+    date_error = _validate_date(as_of)
+    if date_error:
+        return date_error
+
+    mgr = _require_manager()
+    conn, errors = _connect(mgr)
+    if errors:
+        return _ledger_error_response(errors)
+
+    currency = _operating_currency(conn)
+    if currency is None:
+        return {
+            "error": "Ledger has no operating_currency configured.",
+            "error_type": "ledger",
+        }
+
+    try:
+        value = _converted_sum(
+            conn, "account ~ '^(Assets|Liabilities)(:|$)'", as_of, currency
+        )
+    except beanquery.Error as exc:
+        return {"error": str(exc), "error_type": "bql"}
+
+    return {"net_worth": value, "currency": currency, "as_of": as_of}
+
+
+@mcp.tool()
+def account_balance(
+    account: str = Field(
+        description=(
+            "Account name or subtree root, e.g. 'Assets:Bank' matches "
+            "Assets:Bank and every child account beneath it."
+        )
+    ),
+    as_of: Annotated[
+        str | None,
+        Field(
+            description=(
+                "ISO date (YYYY-MM-DD). Balance as of this date; "
+                "omit for the current balance."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Balance of an account (and its subtree), converted to the ledger's
+    operating currency.
+    """
+    if '"' in account:
+        return {
+            "error": "account must not contain a quote character",
+            "error_type": "bql",
+        }
+    date_error = _validate_date(as_of)
+    if date_error:
+        return date_error
+
+    mgr = _require_manager()
+    conn, errors = _connect(mgr)
+    if errors:
+        return _ledger_error_response(errors)
+
+    currency = _operating_currency(conn)
+    if currency is None:
+        return {
+            "error": "Ledger has no operating_currency configured.",
+            "error_type": "ledger",
+        }
+
+    try:
+        value = _converted_sum(conn, f'account ~ "^{account}(:|$)"', as_of, currency)
+    except beanquery.Error as exc:
+        return {"error": str(exc), "error_type": "bql"}
+
+    return {
+        "account": account,
+        "balance": value,
+        "currency": currency,
+        "as_of": as_of,
+    }
+
+
+def _inventory_amount(inv) -> tuple[str, str | None]:
+    """Return (display_string, numeric_string). numeric_string is None if
+    the inventory holds more than one currency (conversion incomplete,
+    usually a missing price) — display_string falls back to str(inv)."""
+    position = _safe_position(inv)
+    if position is _AMBIGUOUS:
+        return str(inv), None
+    if position is None:
+        return "0.00", "0.00"
+    return str(position.units), str(position.units.number)
+
+
+@mcp.tool(
+    description=(
+        "Per-commodity holdings: units, cost basis, market value, and "
+        "unrealised gain, converted to the operating currency."
+    )
+)
+def holdings() -> dict:
+    """Fava-style holdings report. Excludes the operating currency itself
+    (cash isn't a 'holding')."""
+    mgr = _require_manager()
+    conn, errors = _connect(mgr)
+    if errors:
+        return _ledger_error_response(errors)
+
+    currency = _operating_currency(conn)
+    if currency is None:
+        return {
+            "error": "Ledger has no operating_currency configured.",
+            "error_type": "ledger",
+        }
+
+    query = (
+        "SELECT currency, sum(units(position)) as units, "
+        f"convert(sum(cost(position)), '{currency}') as cost_basis, "
+        f"convert(sum(value(position)), '{currency}') as market_value "
+        f"WHERE account ~ '^Assets(:|$)' AND currency != '{currency}' "
+        "GROUP BY currency ORDER BY currency"
+    )
+    try:
+        cursor = conn.execute(query)
+    except beanquery.Error as exc:
+        return {"error": str(exc), "error_type": "bql"}
+
+    rows = []
+    for commodity, units, cost_inv, value_inv in cursor.fetchall():
+        units_str, _ = _inventory_amount(units)
+        cost_str, cost_num = _inventory_amount(cost_inv)
+        value_str, value_num = _inventory_amount(value_inv)
+        gain = (
+            str(Decimal(value_num) - Decimal(cost_num))
+            if cost_num is not None and value_num is not None
+            else None
+        )
+        rows.append(
+            {
+                "commodity": commodity,
+                "units": units_str,
+                "cost_basis": cost_str,
+                "market_value": value_str,
+                "gain": gain,
+            }
+        )
+
+    return {"holdings": rows, "currency": currency, "count": len(rows)}
 
 
 def _account_names() -> list[str]:
@@ -177,6 +448,30 @@ def list_tables() -> dict:
             "In BQL, FROM is a date/filter clause, not a SQL-style table selector."
         ),
     }
+
+
+@mcp.tool(
+    description=(
+        "Latest known price for every commodity with price history in the "
+        "ledger."
+    )
+)
+def list_prices() -> dict:
+    """Latest price per commodity, from the prices table. Not subject to
+    the 200-row query cap.
+    """
+    conn = _require_manager().connection()
+    latest: dict[str, tuple] = {}
+    for _, price_date, currency, amount in conn.tables["prices"]:
+        prev = latest.get(currency)
+        if prev is None or price_date > prev[0]:
+            latest[currency] = (price_date, amount)
+
+    prices = [
+        {"commodity": currency, "date": price_date.isoformat(), "price": str(amount)}
+        for currency, (price_date, amount) in sorted(latest.items())
+    ]
+    return {"prices": prices, "count": len(prices)}
 
 
 @mcp.tool()
@@ -218,11 +513,10 @@ def find_unmatched_transfers(
         }
 
     mgr = _require_manager()
-    errors = mgr.connection_errors()
+    conn, errors = _connect(mgr)
     if errors:
         return _ledger_error_response(errors)
 
-    conn = mgr.connection()
     try:
         cursor = conn.execute(
             f'SELECT date, narration, position '
@@ -233,7 +527,7 @@ def find_unmatched_transfers(
 
     min_amount_decimal = Decimal(str(min_amount))
     postings = []
-    for date, narration, position in cursor.fetchall():
+    for posting_date, narration, position in cursor.fetchall():
         amount = position.units.number
         posting_currency = position.units.currency
         if currency and posting_currency != currency:
@@ -242,7 +536,7 @@ def find_unmatched_transfers(
             continue
         postings.append(
             {
-                "date": date,
+                "date": posting_date,
                 "narration": narration,
                 "amount": amount,
                 "currency": posting_currency,
@@ -318,6 +612,29 @@ def get_tables() -> str:
 
 
 @mcp.resource(
+    "beanie://prices",
+    description="Latest known price for every commodity, as JSON.",
+    mime_type="application/json",
+)
+def get_prices() -> str:
+    """JSON-encoded list_prices() output."""
+    return json.dumps(list_prices())
+
+
+@mcp.resource(
+    "beanie://context",
+    description=(
+        "Orientation facts for querying: base currency, date span, account "
+        "roots, today's date. Read this before writing BQL."
+    ),
+    mime_type="application/json",
+)
+def get_context() -> str:
+    """JSON-encoded ledger_info() — see that tool for field meanings."""
+    return json.dumps(ledger_info())
+
+
+@mcp.resource(
     "beanie://bql-guide",
     description="Short BQL guide for agents, including Beancount-specific caveats.",
     mime_type="text/markdown",
@@ -326,6 +643,12 @@ def get_bql_guide() -> str:
     return """# BQL Guide for beanie-mcp
 
 BQL looks SQL-like, but it is not general SQL.
+
+## Get oriented first
+
+Call `ledger_info` (or read `beanie://context`) before writing a query —
+it tells you the ledger's operating currency and today's date, so you
+never have to guess either.
 
 ## Important caveat
 
@@ -341,6 +664,34 @@ posting's stored sign correctly, but `sum(position)` aggregates over many
 postings can read as inverted from what you'd naively expect. If an
 aggregate sign looks surprising, cross-check with a row-level (non-
 aggregated) query on the same account before reporting a number downstream.
+
+## Multi-currency ledgers: always convert
+
+A ledger with multiple currencies (or any stock/crypto holdings) will
+return a mixed-currency `Inventory` from `sum(position)` — not a single
+number. Wrap it in `convert(..., '<CCY>')` to force one currency, using
+the operating currency from `ledger_info`:
+
+```sql
+SELECT convert(sum(position), 'USD')
+WHERE account ~ "Assets|Liabilities"
+```
+
+For lot-tracked holdings (stocks, crypto), `cost(position)` gives the
+booked cost basis and `value(position)` gives the current market value —
+both also need `convert()` if the lot's currency differs from your
+operating currency:
+
+```sql
+SELECT currency, convert(sum(cost(position)), 'USD'),
+       convert(sum(value(position)), 'USD')
+WHERE account ~ "Assets:Broker"
+GROUP BY currency
+```
+
+For net worth or account balances, prefer the dedicated `net_worth` and
+`account_balance` tools — they handle the operating-currency lookup and
+conversion for you.
 
 ## Useful examples
 

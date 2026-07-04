@@ -147,6 +147,7 @@ def bean_file(tmp_path):
     _write_bean(
         bean,
         """
+        option "operating_currency" "USD"
         2022-01-01 open Assets:Cash USD
         2022-01-01 open Expenses:Food USD
         2022-01-02 * "Lunch"
@@ -339,6 +340,25 @@ def test_bean_check_with_errors(tmp_path, monkeypatch):
     _reset_manager()
 
 
+def test_bean_check_reuses_cached_connection(with_ledger, monkeypatch):
+    from beanie_mcp import ledger as ledger_module
+    from beanie_mcp.server import bean_check, run_query
+
+    original_load_file = ledger_module.loader.load_file
+    calls = []
+
+    def counting_load_file(*args, **kwargs):
+        calls.append(1)
+        return original_load_file(*args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.loader, "load_file", counting_load_file)
+
+    run_query("SELECT DISTINCT account ORDER BY account")
+    bean_check()
+
+    assert len(calls) == 1
+
+
 def test_get_accounts_returns_all_accounts(tmp_path, monkeypatch):
     lines = ["2022-01-01 open Assets:Root USD"]
     for i in range(250):
@@ -365,6 +385,150 @@ def test_get_tables_returns_expected_tables(with_ledger):
         assert expected in tables
 
 
+@pytest.fixture()
+def bean_file_prices(tmp_path):
+    bean = tmp_path / "prices.bean"
+    _write_bean(
+        bean,
+        """
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 price AAPL 150.00 USD
+        2022-06-01 price AAPL 175.00 USD
+        2022-01-01 price GOOG 2500.00 USD
+        2022-06-01 price MSFT 300.00 USD
+        2022-01-01 price MSFT 250.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_prices_ledger(bean_file_prices, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_prices))
+    _reset_manager()
+    yield bean_file_prices
+    _reset_manager()
+
+
+def test_list_prices_returns_latest_per_commodity(with_prices_ledger):
+    from beanie_mcp.server import list_prices
+
+    result = list_prices()
+    assert result["count"] == 3
+    by_commodity = {p["commodity"]: p for p in result["prices"]}
+    # AAPL: prices in chronological order in file
+    assert by_commodity["AAPL"]["date"] == "2022-06-01"
+    assert by_commodity["AAPL"]["price"] == "175.00 USD"
+    # GOOG: single price
+    assert by_commodity["GOOG"]["date"] == "2022-01-01"
+    # MSFT: prices out of chronological order in file (later date declared first).
+    # Tests that list_prices picks true latest by date, not just last-iterated.
+    assert by_commodity["MSFT"]["date"] == "2022-06-01"
+    assert by_commodity["MSFT"]["price"] == "300.00 USD"
+
+
+def test_list_prices_empty_ledger(with_ledger):
+    from beanie_mcp.server import list_prices
+
+    result = list_prices()
+    assert result == {"prices": [], "count": 0}
+
+
+def test_get_prices_resource_returns_valid_json(with_prices_ledger):
+    import json
+
+    from beanie_mcp.server import get_prices
+
+    payload = json.loads(get_prices())
+    assert payload["count"] == 3
+
+
+def test_bql_guide_documents_conversion():
+    from beanie_mcp.server import get_bql_guide
+
+    guide = get_bql_guide()
+    assert "convert(" in guide
+    assert "ledger_info" in guide
+
+
+@pytest.fixture()
+def bean_file_with_options(tmp_path):
+    bean = tmp_path / "ledger.bean"
+    _write_bean(
+        bean,
+        """
+        option "title" "Test Ledger"
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Expenses:Food USD
+        2022-03-15 * "Lunch"
+          Assets:Cash    -10.00 USD
+          Expenses:Food   10.00 USD
+        2022-06-20 * "Dinner"
+          Assets:Cash    -20.00 USD
+          Expenses:Food   20.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_options_ledger(bean_file_with_options, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_with_options))
+    _reset_manager()
+    yield bean_file_with_options
+    _reset_manager()
+
+
+def test_ledger_info_returns_expected_shape(with_options_ledger):
+    from beanie_mcp.server import ledger_info
+
+    result = ledger_info()
+    assert set(result.keys()) == {
+        "today",
+        "title",
+        "operating_currency",
+        "date_range",
+        "account_count",
+        "account_roots",
+    }
+    assert result["title"] == "Test Ledger"
+    assert result["operating_currency"] == ["USD"]
+    assert result["account_roots"] == ["Assets", "Expenses"]
+    assert result["date_range"] == {"first": "2022-03-15", "last": "2022-06-20"}
+    assert result["account_count"] == 2
+
+
+def test_ledger_info_no_ledger_raises(no_ledger):
+    from beanie_mcp.server import ledger_info
+
+    with pytest.raises(RuntimeError, match="BEANCOUNT_LEDGER"):
+        ledger_info()
+
+
+def test_ledger_info_broken_ledger_returns_error(tmp_path, monkeypatch):
+    bean = tmp_path / "broken.bean"
+    content = "2022-01-01 open Assets:Cash USD\n"
+    content += "2022-01-02 balance Assets:Cash 999.00 USD\n"
+    bean.write_text(content)
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import ledger_info
+
+    result = ledger_info()
+    assert result["error_type"] == "ledger"
+    _reset_manager()
+
+
+def test_get_context_resource_returns_valid_json(with_options_ledger):
+    import json
+
+    from beanie_mcp.server import get_context
+
+    payload = json.loads(get_context())
+    assert payload["title"] == "Test Ledger"
+
+
 def test_list_accounts_returns_structured_result(tmp_path, monkeypatch):
     bean = tmp_path / "accounts.bean"
     _write_bean(
@@ -383,6 +547,311 @@ def test_list_accounts_returns_structured_result(tmp_path, monkeypatch):
         "accounts": ["Assets:Cash", "Expenses:Food"],
         "count": 2,
     }
+    _reset_manager()
+
+
+# ---------------------------------------------------------------------------
+# net_worth and account_balance
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def bean_file_net_worth(tmp_path):
+    bean = tmp_path / "ledger.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Assets:Bank USD
+        2022-01-01 open Liabilities:CreditCard USD
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 open Expenses:Food USD
+        2022-01-01 * "open"
+          Assets:Cash    1000.00 USD
+          Equity:Opening -1000.00 USD
+        2022-06-01 * "spend"
+          Assets:Cash    -50.00 USD
+          Expenses:Food   50.00 USD
+        2022-06-05 * "borrow"
+          Assets:Bank    200.00 USD
+          Liabilities:CreditCard -200.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_net_worth_ledger(bean_file_net_worth, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_net_worth))
+    _reset_manager()
+    yield bean_file_net_worth
+    _reset_manager()
+
+
+def test_net_worth_current(with_net_worth_ledger):
+    from beanie_mcp.server import net_worth
+
+    result = net_worth()
+    assert result["currency"] == "USD"
+    assert result["net_worth"] == "950.00 USD"
+    assert result["as_of"] is None
+
+
+def test_net_worth_as_of_excludes_later_transactions(with_net_worth_ledger):
+    from beanie_mcp.server import net_worth
+
+    result = net_worth(as_of="2021-01-01")
+    assert result["net_worth"] == "0.00 USD"
+
+
+def test_net_worth_rejects_malformed_date(with_net_worth_ledger):
+    from beanie_mcp.server import net_worth
+
+    result = net_worth(as_of="not-a-date")
+    assert result["error_type"] == "bql"
+
+
+def test_net_worth_rejects_calendar_invalid_date(with_net_worth_ledger):
+    """Shape-valid but calendar-invalid dates (e.g. month 13) must be
+    rejected before reaching BQL, not raise ValueError."""
+    from beanie_mcp.server import net_worth
+
+    result = net_worth(as_of="2022-13-45")
+    assert result["error_type"] == "bql"
+
+
+def test_net_worth_ignores_sibling_account_substring(tmp_path, monkeypatch):
+    """An account like Expenses:AssetsWriteoff must not be folded into net
+    worth just because 'Assets' is a substring of its name."""
+    bean = tmp_path / "sibling.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Expenses:AssetsWriteoff USD
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 * "fund"
+          Assets:Cash    100.00 USD
+          Equity:Opening -100.00 USD
+        2022-01-02 * "writeoff"
+          Expenses:AssetsWriteoff  500.00 USD
+          Equity:Opening          -500.00 USD
+    """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import net_worth
+
+    result = net_worth()
+    assert result["net_worth"] == "100.00 USD"
+    _reset_manager()
+
+
+def test_net_worth_no_operating_currency(tmp_path, monkeypatch):
+    bean = tmp_path / "no_ccy.bean"
+    _write_bean(bean, "2022-01-01 open Assets:Cash USD\n")
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import net_worth
+
+    result = net_worth()
+    assert result["error_type"] == "ledger"
+    _reset_manager()
+
+
+def test_account_balance_exact_and_subtree(with_net_worth_ledger):
+    from beanie_mcp.server import account_balance
+
+    cash = account_balance("Assets:Cash")
+    assert cash["balance"] == "950.00 USD"
+
+    assets = account_balance("Assets")
+    assert assets["balance"] == "1150.00 USD"
+
+
+def test_account_balance_rejects_quote_in_account(with_net_worth_ledger):
+    from beanie_mcp.server import account_balance
+
+    result = account_balance('Assets"; DROP')
+    assert result["error_type"] == "bql"
+
+
+def test_account_balance_rejects_malformed_date(with_net_worth_ledger):
+    from beanie_mcp.server import account_balance
+
+    result = account_balance("Assets:Cash", as_of="06-01-2022")
+    assert result["error_type"] == "bql"
+
+
+def test_account_balance_rejects_calendar_invalid_date(with_net_worth_ledger):
+    """Shape-valid but calendar-invalid dates (e.g. month 13) must be
+    rejected before reaching BQL, not raise ValueError."""
+    from beanie_mcp.server import account_balance
+
+    result = account_balance("Assets:Cash", as_of="2022-13-45")
+    assert result["error_type"] == "bql"
+
+
+def test_account_balance_isolates_sibling_subtree(tmp_path, monkeypatch):
+    """Assets:Chase must not substring-match its sibling Assets:ChaseSaving."""
+    bean = tmp_path / "siblings.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Chase USD
+        2022-01-01 open Assets:ChaseSaving USD
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 * "fund chase"
+          Assets:Chase    10.00 USD
+          Equity:Opening -10.00 USD
+        2022-01-01 * "fund chase saving"
+          Assets:ChaseSaving  500.00 USD
+          Equity:Opening     -500.00 USD
+    """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import account_balance
+
+    result = account_balance("Assets:Chase")
+    assert result["balance"] == "10.00 USD"
+    _reset_manager()
+
+
+def test_account_balance_exactly_zero(tmp_path, monkeypatch):
+    """Test that an account with equal and opposite postings (summing to exactly
+    zero) returns "0.00 USD" rather than the literal string "None"."""
+    bean = tmp_path / "zero_balance.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:ZeroAccount USD
+        2022-01-01 open Equity:Opening USD
+        2022-01-02 * "deposit"
+          Assets:ZeroAccount   50.00 USD
+          Equity:Opening      -50.00 USD
+        2022-01-03 * "withdrawal"
+          Assets:ZeroAccount  -50.00 USD
+          Equity:Opening       50.00 USD
+    """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import account_balance
+
+    result = account_balance("Assets:ZeroAccount")
+    assert result["balance"] == "0.00 USD"
+    assert result["currency"] == "USD"
+    _reset_manager()
+
+
+# ---------------------------------------------------------------------------
+# holdings
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def bean_file_holdings(tmp_path):
+    bean = tmp_path / "holdings.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Assets:Broker:AAPL AAPL
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 price AAPL 150.00 USD
+        2022-06-01 price AAPL 175.00 USD
+        2022-01-01 * "fund"
+          Assets:Cash    5000.00 USD
+          Equity:Opening -5000.00 USD
+        2022-01-01 * "buy"
+          Assets:Broker:AAPL 10 AAPL {150.00 USD}
+          Assets:Cash    -1500.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_holdings_ledger(bean_file_holdings, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_holdings))
+    _reset_manager()
+    yield bean_file_holdings
+    _reset_manager()
+
+
+def test_holdings_reports_units_cost_value_gain(with_holdings_ledger):
+    from beanie_mcp.server import holdings
+
+    result = holdings()
+    assert result["currency"] == "USD"
+    assert result["count"] == 1
+    row = result["holdings"][0]
+    assert row["commodity"] == "AAPL"
+    assert row["units"] == "10 AAPL"
+    assert row["cost_basis"] == "1500.00 USD"
+    assert row["market_value"] == "1750.00 USD"
+    assert row["gain"] == "250.00"
+
+
+def test_holdings_no_holdings_returns_empty(with_ledger):
+    from beanie_mcp.server import holdings
+
+    result = holdings()
+    assert result["holdings"] == []
+    assert result["count"] == 0
+
+
+def test_holdings_ignores_non_asset_account_substring(tmp_path, monkeypatch):
+    """An Expenses:AssetsWriteoff account holding a foreign currency must
+    not appear in holdings just because 'Assets' is a substring of it."""
+    bean = tmp_path / "sibling_holdings.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Assets:Broker:AAPL AAPL
+        2022-01-01 open Expenses:AssetsWriteoff EUR
+        2022-01-01 open Equity:Opening USD
+        2022-01-01 open Equity:Opening2 EUR
+        2022-01-01 price AAPL 150.00 USD
+        2022-01-01 * "fund"
+          Assets:Cash    5000.00 USD
+          Equity:Opening -5000.00 USD
+        2022-01-01 * "buy"
+          Assets:Broker:AAPL 10 AAPL {150.00 USD}
+          Assets:Cash    -1500.00 USD
+        2022-01-02 * "writeoff"
+          Expenses:AssetsWriteoff  200.00 EUR
+          Equity:Opening2         -200.00 EUR
+    """,
+    )
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import holdings
+
+    result = holdings()
+    commodities = {row["commodity"] for row in result["holdings"]}
+    assert commodities == {"AAPL"}
+    assert "EUR" not in commodities
+    _reset_manager()
+
+
+def test_holdings_no_operating_currency(tmp_path, monkeypatch):
+    bean = tmp_path / "no_ccy.bean"
+    _write_bean(bean, "2022-01-01 open Assets:Cash USD\n")
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean))
+    _reset_manager()
+    from beanie_mcp.server import holdings
+
+    result = holdings()
+    assert result["error_type"] == "ledger"
     _reset_manager()
 
 
@@ -491,3 +960,102 @@ def test_find_unmatched_transfers_currency_filter(tmp_path, monkeypatch):
     assert result["orphan_count"] == 1
     assert result["orphans"][0]["currency"] == "USD"
     _reset_manager()
+
+
+# ---------------------------------------------------------------------------
+# _inventory_amount edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_amount_zero_position():
+    """Test that an inventory netting to zero returns ("0.00", "0.00")."""
+    from decimal import Decimal
+
+    from beancount.core import amount, inventory
+
+    from beanie_mcp.server import _inventory_amount
+
+    inv = inventory.Inventory()
+    inv.add_amount(amount.Amount(Decimal("100.00"), "USD"))
+    inv.add_amount(amount.Amount(Decimal("-100.00"), "USD"))
+
+    display_str, numeric_str = _inventory_amount(inv)
+    assert display_str == "0.00"
+    assert numeric_str == "0.00"
+
+
+def test_inventory_amount_multi_currency():
+    """Test that an inventory with multiple currencies falls back to str(inv)
+    for display and None for numeric value."""
+    from decimal import Decimal
+
+    from beancount.core import amount, inventory
+
+    from beanie_mcp.server import _inventory_amount
+
+    inv = inventory.Inventory()
+    inv.add_amount(amount.Amount(Decimal("100.00"), "USD"))
+    inv.add_amount(amount.Amount(Decimal("10.00"), "AAPL"))
+
+    display_str, numeric_str = _inventory_amount(inv)
+    assert "100.00 USD" in display_str
+    assert "10.00 AAPL" in display_str
+    assert numeric_str is None
+
+
+@pytest.fixture()
+def bean_file_unconvertible(tmp_path):
+    """Ledger with a foreign-currency asset that has no price directive,
+    making it unconvertible to the operating currency."""
+    bean = tmp_path / "unconvertible.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Assets:Foreign XYZ
+        2022-01-01 open Equity:Opening USD
+        2022-01-02 * "fund"
+          Assets:Cash    1000.00 USD
+          Equity:Opening -1000.00 USD
+        2022-01-03 * "acquire foreign asset (no price)"
+          Assets:Foreign   100.00 XYZ
+          Assets:Cash     -100.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_unconvertible_ledger(bean_file_unconvertible, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_unconvertible))
+    _reset_manager()
+    yield bean_file_unconvertible
+    _reset_manager()
+
+
+def test_converted_sum_handles_unconvertible_multi_currency(with_unconvertible_ledger):
+    """Test that _converted_sum gracefully handles unconvertible multi-currency
+    inventories (e.g., when a foreign asset has no price directive to convert it).
+    Should return string representation instead of raising AssertionError."""
+    from beanie_mcp.server import account_balance, net_worth
+
+    # Call net_worth — it uses _converted_sum internally.
+    # Since Assets contains both USD and XYZ with no price to convert XYZ,
+    # convert() will return a multi-currency inventory that get_only_position()
+    # cannot reduce to a single position. Should not crash.
+    result_nw = net_worth()
+    assert isinstance(result_nw, dict)
+    # Should have either a valid net_worth (with fallback string) or an error
+    assert "net_worth" in result_nw or "error" in result_nw
+
+    # Call account_balance on Assets — same scenario.
+    result_ab = account_balance("Assets")
+    assert isinstance(result_ab, dict)
+    assert "balance" in result_ab or "error" in result_ab
+
+    # If a balance is returned (not an error), it should be a string
+    if "balance" in result_ab:
+        assert isinstance(result_ab["balance"], str)
+        # The result should contain both currency codes since it couldn't convert
+        assert "USD" in result_ab["balance"] and "XYZ" in result_ab["balance"]

@@ -182,8 +182,13 @@ beanie-mcp is designed for real-world ledgers, not just small demos:
 
 ## Install
 
-The recommended way to run beanie-mcp is via `uvx` — no clone, no local
-checkout to keep updated:
+> **Not yet on PyPI.** beanie-mcp isn't published to PyPI yet, so `uvx beanie-mcp`
+> below doesn't work today — use [Running from source](#running-from-source-development)
+> instead. The `uvx` form is shown here because it's what installation will
+> look like once the package is published.
+
+Once published, the recommended way to run beanie-mcp will be via `uvx` — no
+clone, no local checkout to keep updated:
 
 ```bash
 uvx beanie-mcp

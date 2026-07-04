@@ -394,6 +394,8 @@ def bean_file_prices(tmp_path):
         2022-01-01 price AAPL 150.00 USD
         2022-06-01 price AAPL 175.00 USD
         2022-01-01 price GOOG 2500.00 USD
+        2022-06-01 price MSFT 300.00 USD
+        2022-01-01 price MSFT 250.00 USD
     """,
     )
     return bean
@@ -411,11 +413,17 @@ def test_list_prices_returns_latest_per_commodity(with_prices_ledger):
     from beanie_mcp.server import list_prices
 
     result = list_prices()
-    assert result["count"] == 2
+    assert result["count"] == 3
     by_commodity = {p["commodity"]: p for p in result["prices"]}
+    # AAPL: prices in chronological order in file
     assert by_commodity["AAPL"]["date"] == "2022-06-01"
     assert by_commodity["AAPL"]["price"] == "175.00 USD"
+    # GOOG: single price
     assert by_commodity["GOOG"]["date"] == "2022-01-01"
+    # MSFT: prices out of chronological order in file (later date declared first).
+    # Tests that list_prices picks true latest by date, not just last-iterated.
+    assert by_commodity["MSFT"]["date"] == "2022-06-01"
+    assert by_commodity["MSFT"]["price"] == "300.00 USD"
 
 
 def test_list_prices_empty_ledger(with_ledger):
@@ -431,7 +439,7 @@ def test_get_prices_resource_returns_valid_json(with_prices_ledger):
     from beanie_mcp.server import get_prices
 
     payload = json.loads(get_prices())
-    assert payload["count"] == 2
+    assert payload["count"] == 3
 
 
 def test_bql_guide_documents_conversion():

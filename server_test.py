@@ -888,3 +888,61 @@ def test_inventory_amount_multi_currency():
     assert "100.00 USD" in display_str
     assert "10.00 AAPL" in display_str
     assert numeric_str is None
+
+
+@pytest.fixture()
+def bean_file_unconvertible(tmp_path):
+    """Ledger with a foreign-currency asset that has no price directive,
+    making it unconvertible to the operating currency."""
+    bean = tmp_path / "unconvertible.bean"
+    _write_bean(
+        bean,
+        """
+        option "operating_currency" "USD"
+        2022-01-01 open Assets:Cash USD
+        2022-01-01 open Assets:Foreign XYZ
+        2022-01-01 open Equity:Opening USD
+        2022-01-02 * "fund"
+          Assets:Cash    1000.00 USD
+          Equity:Opening -1000.00 USD
+        2022-01-03 * "acquire foreign asset (no price)"
+          Assets:Foreign   100.00 XYZ
+          Assets:Cash     -100.00 USD
+    """,
+    )
+    return bean
+
+
+@pytest.fixture()
+def with_unconvertible_ledger(bean_file_unconvertible, monkeypatch):
+    monkeypatch.setenv("BEANCOUNT_LEDGER", str(bean_file_unconvertible))
+    _reset_manager()
+    yield bean_file_unconvertible
+    _reset_manager()
+
+
+def test_converted_sum_handles_unconvertible_multi_currency(with_unconvertible_ledger):
+    """Test that _converted_sum gracefully handles unconvertible multi-currency
+    inventories (e.g., when a foreign asset has no price directive to convert it).
+    Should return string representation instead of raising AssertionError."""
+    from beanie_mcp.server import account_balance, net_worth
+
+    # Call net_worth — it uses _converted_sum internally.
+    # Since Assets contains both USD and XYZ with no price to convert XYZ,
+    # convert() will return a multi-currency inventory that get_only_position()
+    # cannot reduce to a single position. Should not crash.
+    result_nw = net_worth()
+    assert isinstance(result_nw, dict)
+    # Should have either a valid net_worth (with fallback string) or an error
+    assert "net_worth" in result_nw or "error" in result_nw
+
+    # Call account_balance on Assets — same scenario.
+    result_ab = account_balance("Assets")
+    assert isinstance(result_ab, dict)
+    assert "balance" in result_ab or "error" in result_ab
+
+    # If a balance is returned (not an error), it should be a string
+    if "balance" in result_ab:
+        assert isinstance(result_ab["balance"], str)
+        # The result should contain both currency codes since it couldn't convert
+        assert "USD" in result_ab["balance"] and "XYZ" in result_ab["balance"]

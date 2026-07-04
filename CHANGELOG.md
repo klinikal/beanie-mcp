@@ -12,6 +12,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   currency, with an optional `as_of` date.
 - `account_balance` tool — balance of an account or subtree converted to
   the operating currency, with an optional `as_of` date.
+- `holdings` tool — per-commodity units, cost basis, market value, and
+  unrealised gain, converted to the operating currency.
 - `list_prices` tool and `beanie://prices` resource — latest known price
   per commodity.
 

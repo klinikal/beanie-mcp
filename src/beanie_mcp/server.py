@@ -211,7 +211,10 @@ def _converted_sum(
     if not rows:
         return f"0.00 {currency}"
     inventory = rows[0][0]
-    position = inventory.get_only_position()
+    try:
+        position = inventory.get_only_position()
+    except (ValueError, AssertionError):
+        return str(inventory)
     if position is None:
         return f"0.00 {currency}"
     return str(position)

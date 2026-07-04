@@ -861,7 +861,9 @@ def test_find_unmatched_transfers_currency_filter(tmp_path, monkeypatch):
 def test_inventory_amount_zero_position():
     """Test that an inventory netting to zero returns ("0.00", "0.00")."""
     from decimal import Decimal
+
     from beancount.core import amount, inventory
+
     from beanie_mcp.server import _inventory_amount
 
     inv = inventory.Inventory()
@@ -877,7 +879,9 @@ def test_inventory_amount_multi_currency():
     """Test that an inventory with multiple currencies falls back to str(inv)
     for display and None for numeric value."""
     from decimal import Decimal
+
     from beancount.core import amount, inventory
+
     from beanie_mcp.server import _inventory_amount
 
     inv = inventory.Inventory()

@@ -104,6 +104,14 @@ def ledger_info() -> dict:
     }
 
 
+_READ_ONLY_STATEMENTS = (
+    beanquery.parser.ast.Select,
+    beanquery.parser.ast.Print,
+    beanquery.parser.ast.Balances,
+    beanquery.parser.ast.Journal,
+)
+
+
 def _run_bql(query: str, offset: int = 0) -> dict:
     mgr = _require_manager()
     conn, errors = _connect(mgr)
@@ -111,7 +119,14 @@ def _run_bql(query: str, offset: int = 0) -> dict:
         return _ledger_error_response(errors)
 
     try:
-        cursor = conn.execute(query)
+        # Parse first and execute the AST, so CREATE/INSERT/dot-commands
+        # (which can open arbitrary files) never reach the compiler.
+        statement = beanquery.parser.parse(query)
+        if not isinstance(statement, _READ_ONLY_STATEMENTS):
+            raise beanquery.ProgrammingError(
+                "only SELECT, PRINT, BALANCES and JOURNAL statements are allowed"
+            )
+        cursor = conn.execute(statement)
     except beanquery.Error as exc:
         return {"error": str(exc), "error_type": "bql"}
 
@@ -388,7 +403,14 @@ def holdings() -> dict:
         "GROUP BY currency ORDER BY currency"
     )
     try:
-        cursor = conn.execute(query)
+        # Parse first and execute the AST, so CREATE/INSERT/dot-commands
+        # (which can open arbitrary files) never reach the compiler.
+        statement = beanquery.parser.parse(query)
+        if not isinstance(statement, _READ_ONLY_STATEMENTS):
+            raise beanquery.ProgrammingError(
+                "only SELECT, PRINT, BALANCES and JOURNAL statements are allowed"
+            )
+        cursor = conn.execute(statement)
     except beanquery.Error as exc:
         return {"error": str(exc), "error_type": "bql"}
 

@@ -167,6 +167,7 @@ beanie-mcp is designed for real-world ledgers, not just small demos:
 - **Resource-safe row limit** - query responses cap at 200 rows and only fetch one extra row to detect truncation.
 - **Account tools bypass the cap** - account enumeration fetches the full declared account list regardless of ledger size.
 - **Locked ledger path** - the ledger path is fixed by the `BEANCOUNT_LEDGER` env var at startup, so the agent cannot point the server at arbitrary files on your filesystem.
+- **Read-only query allowlist** - `run_query` parses each statement with beanquery's own parser and executes only SELECT, PRINT, BALANCES and JOURNAL. CREATE TABLE (which can read any file), INSERT and dot-commands are rejected before execution.
 - **include-aware cache** - the ledger is only re-parsed when the root file or any loaded `include` file changes, not on every query.
 - **Watchdog auto-reload** - file system watcher invalidates the cache when `.bean` files are modified, created, moved, or deleted.
 - **Explicit `pydantic-settings` dependency** - configuration loading does not rely on accidental transitive dependencies.

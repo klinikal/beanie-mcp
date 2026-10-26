@@ -1,5 +1,6 @@
 """Tests for beanie-mcp — ledger.py and server.py."""
 
+import builtins
 import os
 import textwrap
 import time
@@ -1059,3 +1060,51 @@ def test_converted_sum_handles_unconvertible_multi_currency(with_unconvertible_l
         assert isinstance(result_ab["balance"], str)
         # The result should contain both currency codes since it couldn't convert
         assert "USD" in result_ab["balance"] and "XYZ" in result_ab["balance"]
+
+
+@pytest.mark.parametrize("prefix", ["", "csv:"])
+def test_run_query_rejects_external_source_without_opening(
+    with_ledger, tmp_path, monkeypatch, prefix
+):
+    from beanie_mcp.server import run_query
+
+    sentinel = tmp_path / "sentinel.csv"
+    sentinel.write_text("value\nprivate-marker\n")
+    opened = []
+    real_open = builtins.open
+
+    def track_open(file, *args, **kwargs):
+        if str(file) == str(sentinel):
+            opened.append(file)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", track_open)
+    result = run_query(f'CREATE TABLE external USING "{prefix}{sentinel}"')
+    assert opened == []
+    assert result["error_type"] == "bql"
+    assert "private-marker" not in str(result)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        ".help", ".output sentinel", "INSERT INTO postings VALUES (1)",
+        "CREATE TABLE external (value TEXT)",
+    ],
+)
+def test_run_query_rejects_non_read_statements(with_ledger, query):
+    from beanie_mcp.server import run_query
+
+    assert run_query(query)["error_type"] == "bql"
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["SELECT account", "/* comment */ SeLeCt account", "PRINT", "BALANCES", "JOURNAL"],
+)
+def test_run_query_allows_read_statements(with_ledger, query):
+    from beanie_mcp.server import run_query
+
+    result = run_query(query)
+    assert "error" not in result
+    assert result["rows"]

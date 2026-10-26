@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the gap between "James's repo" and "the premier beancount MCP" — remove the top BQL footguns with an orientation tool, add Fava-parity report tools (net worth, account balance, holdings) that agents currently get wrong via raw BQL, fix a redundant ledger parse, and make the server installable via `uvx` from PyPI.
+**Goal:** Close the gap between "this repo" and "the premier beancount MCP" — remove the top BQL footguns with an orientation tool, add Fava-parity report tools (net worth, account balance, holdings) that agents currently get wrong via raw BQL, fix a redundant ledger parse, and make the server installable via `uvx` from PyPI.
 
 **Architecture:** All new tools live in `src/beanie_mcp/server.py` next to the existing `run_query`/`bean_check`/`list_accounts` tools, following the exact same pattern (`@mcp.tool()` function returning a plain `dict`, errors surfaced as `{"error": ..., "error_type": ...}` rather than raised exceptions). New report tools build one shared `_operating_currency()` / `_converted_sum()` helper pair rather than duplicating BQL string construction. No new files, no new dependencies, no changes to `ledger.py`'s public interface except reusing an already-existing method (`connection_errors()`) from one more call site.
 
@@ -22,7 +22,7 @@
 
 - **Fava wrapping.** Report math is reproduced directly via BQL `convert()`/`cost()`/`value()` (verified working below) — no Flask/Fava dependency.
 - **`income_statement` / `balance_sheet` dedicated tools.** An agent composes these from `run_query` once it has `ledger_info` — adding dedicated tools here is scope creep past what's actually hard in BQL.
-- **`run_query` explicit `limit` param to exceed the 200-row cap.** The cap exists specifically to bound agent-triggered output; a param that raises it defeats that purpose. `offset`-based pagination (already shipped) already solves "I need more than 200 rows" without reopening that safety property. Skipped — flag to James if he disagrees.
+- **`run_query` explicit `limit` param to exceed the 200-row cap.** The cap exists specifically to bound agent-triggered output; a param that raises it defeats that purpose. `offset`-based pagination (already shipped) already solves "I need more than 200 rows" without reopening that safety property. Skipped — flag to the maintainer if they disagree.
 - **Writes/edits/categorisation, multi-ledger, HTTP/SSE transport.** Confirmed non-goals per the source brainstorm — read-only, single locked ledger path, stdio-only.
 
 ## Verified Facts (checked against the real `.venv`, not assumed)
@@ -938,7 +938,7 @@ to:
 
 - [ ] **Step 2: Create `CHANGELOG.md`**
 
-Create `/Users/james/Documents/Projects/beanie-mcp/CHANGELOG.md`:
+Create `CHANGELOG.md`:
 
 ```markdown
 # Changelog
@@ -1116,7 +1116,7 @@ Below each replaced block, add one line: `For running from source instead, see [
 
 - [ ] **Step 5: Verify the package builds and installs cleanly**
 
-Run: `cd /Users/james/Documents/Projects/beanie-mcp && uv build`
+Run: `uv build`
 Expected: `Successfully built dist/beanie_mcp-0.2.0.tar.gz and dist/beanie_mcp-0.2.0-py3-none-any.whl` (or equivalent — confirms the version bump took and the package still builds).
 
 Run: `uvx --from ./dist/beanie_mcp-0.2.0-py3-none-any.whl beanie-mcp --help 2>&1 | head -5`
@@ -1129,7 +1129,7 @@ git add pyproject.toml CHANGELOG.md README.md
 git commit -m "chore: prep v0.2.0 for PyPI — uvx install path, beta classifier, changelog"
 ```
 
-**Note:** This task prepares the release. Actually publishing to PyPI (`uv publish` or `twine upload`) requires PyPI account credentials and is a one-way, irreversible action (a version number can never be reused once uploaded) — confirm with James before running it. Do not run a publish command as part of this task.
+**Note:** This task prepares the release. Actually publishing to PyPI (`uv publish` or `twine upload`) requires PyPI account credentials and is a one-way, irreversible action (a version number can never be reused once uploaded) — confirm with the maintainer before running it. Do not run a publish command as part of this task.
 
 ---
 

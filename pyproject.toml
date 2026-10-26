@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
     "beancount>=3.1.0",
     "beanquery>=0.2.0",
-    "mcp[cli]>=1.23.0",
+    "mcp[cli]>=1.23.0,<2",
     "pydantic-settings>=2.0.0",
     "watchdog>=3.0.0",
 ]

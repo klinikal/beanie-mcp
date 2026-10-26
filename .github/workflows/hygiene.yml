@@ -1,0 +1,16 @@
+name: hygiene
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  no-home-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if a tracked text file contains a home-directory path
+        run: |
+          if git grep -nI -e '/Users/' -- ':!.github/workflows/hygiene.yml'; then
+            echo "Home-directory path found in tracked files" >&2
+            exit 1
+          fi

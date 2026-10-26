@@ -938,7 +938,7 @@ to:
 
 - [ ] **Step 2: Create `CHANGELOG.md`**
 
-Create `/Users/james/Documents/Projects/beanie-mcp/CHANGELOG.md`:
+Create `CHANGELOG.md`:
 
 ```markdown
 # Changelog
@@ -1116,7 +1116,7 @@ Below each replaced block, add one line: `For running from source instead, see [
 
 - [ ] **Step 5: Verify the package builds and installs cleanly**
 
-Run: `cd /Users/james/Documents/Projects/beanie-mcp && uv build`
+Run: `uv build`
 Expected: `Successfully built dist/beanie_mcp-0.2.0.tar.gz and dist/beanie_mcp-0.2.0-py3-none-any.whl` (or equivalent — confirms the version bump took and the package still builds).
 
 Run: `uvx --from ./dist/beanie_mcp-0.2.0-py3-none-any.whl beanie-mcp --help 2>&1 | head -5`
